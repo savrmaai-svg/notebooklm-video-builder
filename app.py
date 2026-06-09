@@ -40,10 +40,22 @@ def save_video_uploads(uploaded_videos):
     return saved_paths
 
 
+def build_auto_topic(topic, transcript_text):
+    if topic.strip():
+        return topic.strip()
+
+    clean_transcript = " ".join(transcript_text.strip().replace('"', "").split())
+    if clean_transcript:
+        return " ".join(clean_transcript.split()[:10])
+
+    return ""
+
+
 def render_api_key_sidebar():
     st.sidebar.header("API Keys")
     st.session_state.setdefault("pexels_api_key", "")
     st.session_state.setdefault("pixabay_api_key", "")
+    st.session_state.setdefault("coverr_api_key", "")
 
     st.session_state.pexels_api_key = st.sidebar.text_input(
         "Pexels API Key",
@@ -53,6 +65,11 @@ def render_api_key_sidebar():
     st.session_state.pixabay_api_key = st.sidebar.text_input(
         "Pixabay API Key",
         value=st.session_state.pixabay_api_key,
+        type="password",
+    )
+    st.session_state.coverr_api_key = st.sidebar.text_input(
+        "Coverr API Key (optional)",
+        value=st.session_state.coverr_api_key,
         type="password",
     )
 
@@ -130,8 +147,10 @@ def render_app():
         st.error("Manual mode mein kam se kam 1 video file upload karo.")
         return
 
-    if video_source == "Auto fetch stock videos" and not topic.strip():
-        st.error("Auto mode ke liye topic enter karo.")
+    search_topic = build_auto_topic(topic, transcript_text)
+
+    if video_source == "Auto fetch stock videos" and not search_topic:
+        st.error("Auto mode ke liye topic enter karo ya transcript paste karo.")
         return
 
     save_uploaded_file(audio_upload, AUDIO_FILE)
@@ -153,10 +172,11 @@ def render_app():
                 clear_old_videos()
                 progress.progress(10, text="Stock videos search aur download ho rahe hain...")
                 saved_videos = fetch_and_download_videos(
-                    topic=topic,
+                    topic=search_topic,
                     destination_dir=VIDEO_DIR,
                     pexels_api_key=st.session_state.pexels_api_key,
                     pixabay_api_key=st.session_state.pixabay_api_key,
+                    coverr_api_key=st.session_state.coverr_api_key,
                     limit=8,
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")

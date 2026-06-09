@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 from urllib.parse import quote_plus
 
 import requests
@@ -8,6 +9,7 @@ DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 DEFAULT_CLIP_LIMIT = 8
+MAX_TOPIC_WORDS = 8
 
 
 class VideoFetchError(RuntimeError):
@@ -18,6 +20,12 @@ def _request_json(url, headers=None):
     response = requests.get(url, headers=headers or {}, timeout=SEARCH_TIMEOUT)
     response.raise_for_status()
     return response.json()
+
+
+def clean_topic(topic):
+    topic = re.sub(r"[^\w\s-]", " ", topic, flags=re.UNICODE)
+    words = topic.split()
+    return " ".join(words[:MAX_TOPIC_WORDS])
 
 
 def _best_pexels_link(video):
@@ -109,9 +117,12 @@ def _best_coverr_link(video):
     return None
 
 
-def fetch_coverr_videos(topic, per_page=DEFAULT_CLIP_LIMIT):
+def fetch_coverr_videos(topic, api_key=None, per_page=DEFAULT_CLIP_LIMIT):
+    if not api_key:
+        return []
+
     url = f"https://api.coverr.co/videos?keywords={quote_plus(topic)}&page=1"
-    data = _request_json(url)
+    data = _request_json(url, headers={"Authorization": f"Bearer {api_key}"})
     videos = []
 
     for video in _coverr_items(data):
@@ -124,8 +135,9 @@ def fetch_coverr_videos(topic, per_page=DEFAULT_CLIP_LIMIT):
     return videos
 
 
-def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, limit=DEFAULT_CLIP_LIMIT):
-    if not topic.strip():
+def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr_api_key=None, limit=DEFAULT_CLIP_LIMIT):
+    topic = clean_topic(topic)
+    if not topic:
         raise VideoFetchError("Topic required hai.")
 
     errors = []
@@ -144,7 +156,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, limit=
 
     if not found:
         try:
-            found.extend(fetch_coverr_videos(topic, per_page=limit))
+            found.extend(fetch_coverr_videos(topic, api_key=coverr_api_key, per_page=limit))
         except Exception as exc:
             errors.append(f"Coverr failed: {exc}")
 
@@ -159,7 +171,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, limit=
             break
 
     if not unique:
-        detail = " | ".join(errors) if errors else "No stock videos found."
+        detail = " | ".join(errors) if errors else "No stock videos found. Valid Pexels/Pixabay/Coverr API key check karo."
         raise VideoFetchError(detail)
 
     return unique
@@ -184,12 +196,12 @@ def download_videos(videos, destination_dir):
     return saved_paths
 
 
-def fetch_and_download_videos(topic, destination_dir, pexels_api_key=None, pixabay_api_key=None, limit=DEFAULT_CLIP_LIMIT):
+def fetch_and_download_videos(topic, destination_dir, pexels_api_key=None, pixabay_api_key=None, coverr_api_key=None, limit=DEFAULT_CLIP_LIMIT):
     videos = search_stock_videos(
         topic=topic,
         pexels_api_key=pexels_api_key,
         pixabay_api_key=pixabay_api_key,
+        coverr_api_key=coverr_api_key,
         limit=limit,
     )
     return download_videos(videos, destination_dir)
-
