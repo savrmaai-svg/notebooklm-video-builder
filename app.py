@@ -53,61 +53,142 @@ def validate_inputs():
 
 
 def create_video():
-    from moviepy.editor import AudioFileClip
-    from audio_utils import get_target_duration
-    from subtitle_utils import add_subtitles, load_or_create_subtitle_segments, write_srt
-    from video_utils import build_synced_video, collect_video_files
+    import math
+    import re
+    import subprocess
+    import imageio_ffmpeg
 
     ensure_folders()
     validate_inputs()
 
-    target_duration = get_target_duration(AUDIO_FILE, TARGET_SECONDS)
-    video_paths = collect_video_files(VIDEO_DIR)
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    video_paths = sorted(
+        path for path in VIDEO_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    )
+    if not video_paths:
+        raise FileNotFoundError("input/videos folder mein MP4 videos nahi mile.")
 
-    base_video = build_synced_video(
-        video_paths=video_paths,
-        target_duration=target_duration,
-        size=VIDEO_SIZE,
-        fps=FPS,
-        crossfade_seconds=CROSSFADE_SECONDS,
+    def media_duration(path):
+        result = subprocess.run(
+            [ffmpeg, "-i", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = f"{result.stdout}\n{result.stderr}"
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+        if not match:
+            return 0.0
+        hours, minutes, seconds = match.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+    def srt_time(seconds):
+        seconds = max(0, float(seconds))
+        millis = int(round((seconds - math.floor(seconds)) * 1000))
+        whole = int(seconds)
+        hours = whole // 3600
+        minutes = (whole % 3600) // 60
+        secs = whole % 60
+        return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
+
+    audio_duration = media_duration(AUDIO_FILE)
+    target_duration = min(audio_duration or TARGET_SECONDS, TARGET_SECONDS, 120)
+    if target_duration <= 0:
+        raise RuntimeError("Audio duration read nahi ho paayi.")
+
+    transcript = ""
+    if TRANSCRIPT_FILE.exists():
+        transcript = TRANSCRIPT_FILE.read_text(encoding="utf-8").strip()
+    if transcript:
+        words = transcript.split()
+        chunk_count = max(1, min(16, math.ceil(len(words) / 9)))
+        chunk_size = max(1, math.ceil(len(words) / chunk_count))
+        segment_duration = target_duration / chunk_count
+        lines = []
+        for index in range(chunk_count):
+            text = " ".join(words[index * chunk_size:(index + 1) * chunk_size])
+            if not text:
+                continue
+            start = index * segment_duration
+            end = min(target_duration, (index + 1) * segment_duration)
+            lines.extend([str(index + 1), f"{srt_time(start)} --> {srt_time(end)}", text, ""])
+        SUBTITLE_FILE.write_text("\n".join(lines), encoding="utf-8")
+
+    temp_dir = OUTPUT_DIR / "segments"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    for old_file in temp_dir.glob("*.mp4"):
+        old_file.unlink()
+
+    segments = []
+    remaining = target_duration
+    index = 0
+    while remaining > 0.2:
+        source = video_paths[index % len(video_paths)]
+        source_duration = media_duration(source) or 5
+        segment_seconds = min(source_duration, remaining, 12)
+        output_segment = temp_dir / f"segment_{index:03}.mp4"
+        vf = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=24"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(source),
+                "-t",
+                f"{segment_seconds:.2f}",
+                "-vf",
+                vf,
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                str(output_segment),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        segments.append(output_segment)
+        remaining -= segment_seconds
+        index += 1
+
+    concat_file = temp_dir / "concat.txt"
+    concat_file.write_text(
+        "\n".join(f"file '{segment.as_posix()}'" for segment in segments),
+        encoding="utf-8",
     )
 
-    audio = AudioFileClip(str(AUDIO_FILE)).subclip(0, target_duration)
-    synced = base_video.set_audio(audio)
-
-    subtitle_segments = load_or_create_subtitle_segments(
-        transcript_path=TRANSCRIPT_FILE,
-        audio_path=AUDIO_FILE,
-        target_duration=target_duration,
-        max_chars=SUBTITLE_MAX_CHARS,
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-i",
+            str(AUDIO_FILE),
+            "-t",
+            f"{target_duration:.2f}",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(FINAL_VIDEO),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=240,
     )
-    write_srt(subtitle_segments, SUBTITLE_FILE)
-
-    final = add_subtitles(
-        video_clip=synced,
-        segments=subtitle_segments,
-        font=FONT,
-        font_path=FONT_PATH,
-        font_size=FONT_SIZE,
-        color=SUBTITLE_COLOR,
-        stroke_color=SUBTITLE_STROKE_COLOR,
-        stroke_width=SUBTITLE_STROKE_WIDTH,
-        max_chars=SUBTITLE_MAX_CHARS,
-    )
-
-    final.write_videofile(
-        str(FINAL_VIDEO),
-        codec="libx264",
-        audio_codec="aac",
-        fps=FPS,
-        preset="medium",
-        threads=4,
-    )
-
-    final.close()
-    synced.close()
-    base_video.close()
-    audio.close()
 
 
 def clear_old_videos():

@@ -252,17 +252,28 @@ def looks_like_video_response(response, url):
 
 
 def validate_video_file(path):
-    from moviepy.editor import VideoFileClip
+    import subprocess
+    import imageio_ffmpeg
 
     try:
-        clip = VideoFileClip(str(path))
-        duration = float(clip.duration or 0)
-        width, height = clip.size
-        clip.close()
+        result = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
     except Exception:
         return False
 
-    return duration >= MIN_VALID_CLIP_SECONDS and width > 0 and height > 0
+    output = f"{result.stdout}\n{result.stderr}"
+    duration_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+    has_video = "Video:" in output
+    if not duration_match or not has_video:
+        return False
+
+    hours, minutes, seconds = duration_match.groups()
+    duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    return duration >= MIN_VALID_CLIP_SECONDS
 
 
 def download_videos(videos, destination_dir):
