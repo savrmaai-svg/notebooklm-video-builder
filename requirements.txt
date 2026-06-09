@@ -1,6 +1,4 @@
 moviepy==1.0.3
-imageio-ffmpeg==0.5.1
-Pillow==9.5.0
-numpy==1.26.4
-faster-whisper==1.0.3
-streamlit==1.35.0
+imageio-ffmpeg>=0.5.1
+Pillow>=10.4.0
+streamlit>=1.35.0

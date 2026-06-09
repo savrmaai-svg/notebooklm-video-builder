@@ -52,8 +52,8 @@ def transcribe_audio_with_whisper(audio_path):
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError(
-            "Auto subtitles ke liye faster-whisper install hona zaroori hai. "
-            "Ya phir input/transcript.txt mein Hindi text daal do."
+            "Auto subtitles cloud deploy mein disabled hain. "
+            "Hindi subtitles ke liye app ke transcript box mein text paste karo."
         ) from exc
 
     model = WhisperModel("small", device="cpu", compute_type="int8")

@@ -63,4 +63,5 @@ output/final_video.mp4
 - Audio 10 minutes se bada hai to first 10 minutes use honge.
 - Videos kam hon to code unhe repeat karke duration fill karega.
 - `input/transcript.txt` mein Hindi text daalne par subtitles us text se banenge.
-- `transcript.txt` empty ho to `faster-whisper` audio se Hindi subtitles auto-generate karega.
+- Streamlit Cloud deployment mein Hindi subtitles ke liye transcript text paste karo.
+- Local machine par auto subtitles chahiye to `pip install faster-whisper` karke empty transcript ke saath run kar sakte ho.
