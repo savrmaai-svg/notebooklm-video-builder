@@ -1,4 +1,5 @@
 from pathlib import Path
+import traceback
 
 import streamlit as st
 
@@ -273,5 +274,9 @@ def render_app():
     show_existing_output()
 
 
-if __name__ == "__main__":
+try:
     render_app()
+except BaseException:
+    st.title("NotebookLM Video Builder")
+    st.error("App startup error mila. Neeche exact error hai.")
+    st.code(traceback.format_exc(), language="python")
