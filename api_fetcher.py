@@ -2,6 +2,7 @@ from pathlib import Path
 import re
 from urllib.parse import quote_plus, urlparse
 
+from moviepy.editor import VideoFileClip
 import requests
 
 
@@ -10,6 +11,7 @@ SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 DEFAULT_CLIP_LIMIT = 8
 MAX_TOPIC_WORDS = 8
+MIN_VALID_CLIP_SECONDS = 2.0
 STOP_WORDS = {
     "ki",
     "ka",
@@ -60,6 +62,13 @@ def search_queries(topic):
         queries.append(" ".join(words[:3]))
     if len(words) > 1:
         queries.append(" ".join(words[:2]))
+    queries.extend(
+        [
+            f"{topic} cinematic video",
+            f"{topic} documentary",
+            f"{topic} history",
+        ]
+    )
 
     unique = []
     for query in queries:
@@ -233,6 +242,28 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
     return unique
 
 
+def looks_like_video_response(response, url):
+    content_type = response.headers.get("Content-Type", "").lower()
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if content_type.startswith("image/"):
+        return False
+    if content_type.startswith("video/"):
+        return True
+    return suffix in {".mp4", ".mov", ".mkv", ".webm"}
+
+
+def validate_video_file(path):
+    try:
+        clip = VideoFileClip(str(path))
+        duration = float(clip.duration or 0)
+        width, height = clip.size
+        clip.close()
+    except Exception:
+        return False
+
+    return duration >= MIN_VALID_CLIP_SECONDS and width > 0 and height > 0
+
+
 def download_videos(videos, destination_dir):
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -246,10 +277,17 @@ def download_videos(videos, destination_dir):
         output_path = destination / f"{source}_{index:03}{suffix}"
         with requests.get(video["url"], stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
             response.raise_for_status()
+            if not looks_like_video_response(response, video["url"]):
+                continue
             with output_path.open("wb") as file:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         file.write(chunk)
+
+        if not validate_video_file(output_path):
+            output_path.unlink(missing_ok=True)
+            continue
+
         saved_paths.append(output_path)
 
     return saved_paths
@@ -263,4 +301,7 @@ def fetch_and_download_videos(topic, destination_dir, pexels_api_key=None, pixab
         coverr_api_key=coverr_api_key,
         limit=limit,
     )
-    return download_videos(videos, destination_dir)
+    saved_paths = download_videos(videos, destination_dir)
+    if not saved_paths:
+        raise VideoFetchError("Real video clips download nahi hue. Image/static files skip kar diye gaye.")
+    return saved_paths
