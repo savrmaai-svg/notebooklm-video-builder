@@ -1,6 +1,6 @@
 from pathlib import Path
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus, urlparse
 
 import requests
 
@@ -10,6 +10,7 @@ SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 DEFAULT_CLIP_LIMIT = 8
 MAX_TOPIC_WORDS = 8
+PUBLIC_SEARCH_LIMIT = 12
 
 
 class VideoFetchError(RuntimeError):
@@ -135,6 +136,83 @@ def fetch_coverr_videos(topic, api_key=None, per_page=DEFAULT_CLIP_LIMIT):
     return videos
 
 
+def fetch_wikimedia_videos(topic, per_page=DEFAULT_CLIP_LIMIT):
+    search = quote_plus(f"{topic} filetype:video")
+    url = (
+        "https://commons.wikimedia.org/w/api.php"
+        f"?action=query&generator=search&gsrnamespace=6&gsrlimit={PUBLIC_SEARCH_LIMIT}"
+        f"&gsrsearch={search}&prop=imageinfo&iiprop=url|mime&format=json"
+    )
+    data = _request_json(url)
+    pages = data.get("query", {}).get("pages", {})
+    videos = []
+
+    for page in pages.values():
+        info = (page.get("imageinfo") or [{}])[0]
+        link = info.get("url")
+        mime = info.get("mime", "")
+        if link and mime.startswith("video/"):
+            videos.append({"source": "wikimedia", "url": link})
+        if len(videos) >= per_page:
+            break
+
+    return videos
+
+
+def _internet_archive_file_url(identifier, file_name):
+    return f"https://archive.org/download/{quote(identifier)}/{quote(file_name)}"
+
+
+def fetch_internet_archive_videos(topic, per_page=DEFAULT_CLIP_LIMIT):
+    query = quote_plus(f'({topic}) AND mediatype:movies')
+    url = (
+        "https://archive.org/advancedsearch.php"
+        f"?q={query}&fl[]=identifier&rows={PUBLIC_SEARCH_LIMIT}&page=1&output=json"
+    )
+    data = _request_json(url)
+    docs = data.get("response", {}).get("docs", [])
+    videos = []
+
+    for doc in docs:
+        identifier = doc.get("identifier")
+        if not identifier:
+            continue
+
+        try:
+            metadata = _request_json(f"https://archive.org/metadata/{quote(identifier)}")
+        except Exception:
+            continue
+
+        for item in metadata.get("files", []):
+            name = item.get("name", "")
+            lowered = name.lower()
+            if lowered.endswith((".mp4", ".webm", ".mov")):
+                videos.append({"source": "internet_archive", "url": _internet_archive_file_url(identifier, name)})
+                break
+
+        if len(videos) >= per_page:
+            break
+
+    return videos
+
+
+def fetch_public_no_key_videos(topic, per_page=DEFAULT_CLIP_LIMIT):
+    videos = []
+
+    try:
+        videos.extend(fetch_wikimedia_videos(topic, per_page=per_page))
+    except Exception:
+        pass
+
+    if len(videos) < MIN_RESULTS_BEFORE_FALLBACK:
+        try:
+            videos.extend(fetch_internet_archive_videos(topic, per_page=per_page))
+        except Exception:
+            pass
+
+    return videos
+
+
 def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr_api_key=None, limit=DEFAULT_CLIP_LIMIT):
     topic = clean_topic(topic)
     if not topic:
@@ -160,6 +238,9 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
         except Exception as exc:
             errors.append(f"Coverr failed: {exc}")
 
+    if not found:
+        found.extend(fetch_public_no_key_videos(topic, per_page=limit))
+
     unique = []
     seen = set()
     for video in found:
@@ -171,7 +252,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
             break
 
     if not unique:
-        detail = " | ".join(errors) if errors else "No stock videos found. Valid Pexels/Pixabay/Coverr API key check karo."
+        detail = "Automatic public video search mein clips nahi mile. Topic ko simple English words mein try karo."
         raise VideoFetchError(detail)
 
     return unique
@@ -184,7 +265,10 @@ def download_videos(videos, destination_dir):
 
     for index, video in enumerate(videos, start=1):
         source = video.get("source", "stock")
-        output_path = destination / f"{source}_{index:03}.mp4"
+        suffix = Path(urlparse(video["url"]).path).suffix.lower()
+        if suffix not in {".mp4", ".mov", ".mkv", ".webm"}:
+            suffix = ".mp4"
+        output_path = destination / f"{source}_{index:03}{suffix}"
         with requests.get(video["url"], stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
             response.raise_for_status()
             with output_path.open("wb") as file:

@@ -51,27 +51,11 @@ def build_auto_topic(topic, transcript_text):
     return ""
 
 
-def render_api_key_sidebar():
-    st.sidebar.header("API Keys")
-    st.session_state.setdefault("pexels_api_key", "")
-    st.session_state.setdefault("pixabay_api_key", "")
-    st.session_state.setdefault("coverr_api_key", "")
-
-    st.session_state.pexels_api_key = st.sidebar.text_input(
-        "Pexels API Key",
-        value=st.session_state.pexels_api_key,
-        type="password",
-    )
-    st.session_state.pixabay_api_key = st.sidebar.text_input(
-        "Pixabay API Key",
-        value=st.session_state.pixabay_api_key,
-        type="password",
-    )
-    st.session_state.coverr_api_key = st.sidebar.text_input(
-        "Coverr API Key (optional)",
-        value=st.session_state.coverr_api_key,
-        type="password",
-    )
+def get_secret(name):
+    try:
+        return st.secrets.get(name, "")
+    except Exception:
+        return ""
 
 
 def show_existing_output():
@@ -92,10 +76,9 @@ def show_existing_output():
 
 def render_app():
     ensure_folders()
-    render_api_key_sidebar()
 
-    st.title("NotebookLM Audio + Pexels Video Builder")
-    st.caption("MP3 audio upload karo, topic se stock clips auto fetch karo ya manual MP4 clips upload karo, phir synced video generate karo.")
+    st.title("NotebookLM Video Builder")
+    st.caption("Topic aur MP3 audio do. App relevant video clips automatically fetch karke synced video generate karega.")
 
     left, right = st.columns([0.52, 0.48], gap="large")
 
@@ -122,7 +105,7 @@ def render_app():
                 accept_multiple_files=True,
             )
         else:
-            st.info("Auto mode Pexels se videos fetch karega. Pexels mein 5 se kam results mile to Pixabay fallback use hoga, phir Coverr try hoga.")
+            st.info("Auto mode Pexels/Pixabay/Coverr keys available hon to unhe use karega. Keys nahi hon to Wikimedia Commons aur Internet Archive se public videos auto fetch karega.")
         transcript_text = st.text_area(
             "Hindi Transcript / Subtitles (optional)",
             height=180,
@@ -174,9 +157,9 @@ def render_app():
                 saved_videos = fetch_and_download_videos(
                     topic=search_topic,
                     destination_dir=VIDEO_DIR,
-                    pexels_api_key=st.session_state.pexels_api_key,
-                    pixabay_api_key=st.session_state.pixabay_api_key,
-                    coverr_api_key=st.session_state.coverr_api_key,
+                    pexels_api_key=get_secret("PEXELS_API_KEY"),
+                    pixabay_api_key=get_secret("PIXABAY_API_KEY"),
+                    coverr_api_key=get_secret("COVERR_API_KEY"),
                     limit=8,
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
