@@ -3,7 +3,6 @@ from pathlib import Path
 import streamlit as st
 
 from api_fetcher import VideoFetchError, fetch_and_download_videos
-from audio_utils import get_target_duration
 from config import (
     AUDIO_FILE,
     CROSSFADE_SECONDS,
@@ -24,8 +23,9 @@ from config import (
     VIDEO_DIR,
     VIDEO_SIZE,
 )
-from subtitle_utils import add_subtitles, load_or_create_subtitle_segments, write_srt
-from video_utils import SUPPORTED_EXTENSIONS, build_synced_video, collect_video_files
+
+
+SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 
 
 st.set_page_config(
@@ -53,6 +53,9 @@ def validate_inputs():
 
 def create_video():
     from moviepy.editor import AudioFileClip
+    from audio_utils import get_target_duration
+    from subtitle_utils import add_subtitles, load_or_create_subtitle_segments, write_srt
+    from video_utils import build_synced_video, collect_video_files
 
     ensure_folders()
     validate_inputs()
@@ -149,16 +152,18 @@ def show_existing_output():
     if not FINAL_VIDEO.exists():
         return
 
-    st.success("Final video ready hai.")
-    st.video(str(FINAL_VIDEO))
-    with FINAL_VIDEO.open("rb") as file:
-        st.download_button(
-            "Download final_video.mp4",
-            data=file,
-            file_name="final_video.mp4",
-            mime="video/mp4",
-            use_container_width=True,
-        )
+    try:
+        st.success("Final video ready hai.")
+        with FINAL_VIDEO.open("rb") as file:
+            st.download_button(
+                "Download final_video.mp4",
+                data=file,
+                file_name="final_video.mp4",
+                mime="video/mp4",
+                use_container_width=True,
+            )
+    except Exception:
+        st.warning("Previous output file load nahi ho paayi. Naya video generate karo.")
 
 
 def render_app():
@@ -204,7 +209,8 @@ def render_app():
     with right:
         st.subheader("Output")
         output_placeholder = st.empty()
-        show_existing_output()
+        if st.session_state.get("video_generated"):
+            show_existing_output()
 
     if not generate:
         return
@@ -253,6 +259,7 @@ def render_app():
 
             progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
             create_video()
+            st.session_state.video_generated = True
             progress.progress(100, text="Done")
         except VideoFetchError as exc:
             st.error(str(exc))
