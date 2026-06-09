@@ -105,7 +105,7 @@ def render_app():
                 accept_multiple_files=True,
             )
         else:
-            st.info("Auto mode Pexels/Pixabay/Coverr keys available hon to unhe use karega. Keys nahi hon to Wikimedia Commons aur Internet Archive se public videos auto fetch karega.")
+            st.info("Auto mode free stock-video sources se clips fetch karega: Pexels, Pixabay, aur Coverr.")
         transcript_text = st.text_area(
             "Hindi Transcript / Subtitles (optional)",
             height=180,
