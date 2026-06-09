@@ -11,5 +11,6 @@ input/videos/*
 output/*
 !output/.gitkeep
 final_videoTEMP*
+*TEMP_MPY*
 
 .streamlit/secrets.toml

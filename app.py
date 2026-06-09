@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import streamlit as st
-from moviepy.editor import AudioFileClip
 
 from api_fetcher import VideoFetchError, fetch_and_download_videos
 from audio_utils import get_target_duration
@@ -53,6 +52,8 @@ def validate_inputs():
 
 
 def create_video():
+    from moviepy.editor import AudioFileClip
+
     ensure_folders()
     validate_inputs()
 

@@ -2,7 +2,6 @@ from pathlib import Path
 import re
 from urllib.parse import quote_plus, urlparse
 
-from moviepy.editor import VideoFileClip
 import requests
 
 
@@ -253,6 +252,8 @@ def looks_like_video_response(response, url):
 
 
 def validate_video_file(path):
+    from moviepy.editor import VideoFileClip
+
     try:
         clip = VideoFileClip(str(path))
         duration = float(clip.duration or 0)
