@@ -3,7 +3,6 @@ import textwrap
 from pathlib import Path
 
 import numpy as np
-from moviepy.editor import CompositeVideoClip, ImageClip
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -175,6 +174,8 @@ def add_subtitles(
     stroke_width,
     max_chars,
 ):
+    from moviepy.editor import CompositeVideoClip, ImageClip
+
     subtitle_clips = []
     subtitle_font = load_subtitle_font(font_path, font_size)
 

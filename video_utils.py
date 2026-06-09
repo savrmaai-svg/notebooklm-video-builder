@@ -6,9 +6,6 @@ from PIL import Image
 if not hasattr(Image, "ANTIALIAS"):
     Image.ANTIALIAS = Image.Resampling.LANCZOS
 
-from moviepy.editor import VideoFileClip, concatenate_videoclips
-from moviepy.video.fx.all import crop, resize
-
 
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 
@@ -23,6 +20,8 @@ def collect_video_files(video_dir):
 
 
 def fit_to_canvas(clip, size):
+    from moviepy.video.fx.all import crop, resize
+
     target_w, target_h = size
     clip = resize(clip, height=target_h)
 
@@ -41,6 +40,8 @@ def fit_to_canvas(clip, size):
 
 
 def build_synced_video(video_paths, target_duration, size, fps, crossfade_seconds):
+    from moviepy.editor import VideoFileClip, concatenate_videoclips
+
     if not video_paths:
         raise FileNotFoundError("input/videos folder mein MP4 videos nahi mile.")
 
