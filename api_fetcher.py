@@ -10,6 +10,26 @@ SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 DEFAULT_CLIP_LIMIT = 8
 MAX_TOPIC_WORDS = 8
+STOP_WORDS = {
+    "ki",
+    "ka",
+    "ke",
+    "ek",
+    "aur",
+    "hai",
+    "hain",
+    "tha",
+    "thi",
+    "mein",
+    "me",
+    "ko",
+    "se",
+    "bahut",
+    "sachi",
+    "kahani",
+    "hindi",
+    "podcast",
+}
 
 
 class VideoFetchError(RuntimeError):
@@ -24,8 +44,28 @@ def _request_json(url, headers=None):
 
 def clean_topic(topic):
     topic = re.sub(r"[^\w\s-]", " ", topic, flags=re.UNICODE)
-    words = topic.split()
+    words = [word for word in topic.split() if word.lower() not in STOP_WORDS]
     return " ".join(words[:MAX_TOPIC_WORDS])
+
+
+def search_queries(topic):
+    topic = clean_topic(topic)
+    if not topic:
+        return []
+
+    words = topic.split()
+    queries = [topic]
+
+    if len(words) > 3:
+        queries.append(" ".join(words[:3]))
+    if len(words) > 1:
+        queries.append(" ".join(words[:2]))
+
+    unique = []
+    for query in queries:
+        if query and query not in unique:
+            unique.append(query)
+    return unique
 
 
 def _best_pexels_link(video):
@@ -136,29 +176,42 @@ def fetch_coverr_videos(topic, api_key=None, per_page=DEFAULT_CLIP_LIMIT):
 
 
 def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr_api_key=None, limit=DEFAULT_CLIP_LIMIT):
-    topic = clean_topic(topic)
-    if not topic:
+    queries = search_queries(topic)
+    if not queries:
         raise VideoFetchError("Topic required hai.")
 
     errors = []
     found = []
 
-    try:
-        found.extend(fetch_pexels_videos(topic, pexels_api_key, per_page=limit))
-    except Exception as exc:
-        errors.append(f"Pexels failed: {exc}")
+    if pexels_api_key:
+        for query in queries:
+            try:
+                found.extend(fetch_pexels_videos(query, pexels_api_key, per_page=limit))
+            except Exception as exc:
+                errors.append(f"Pexels failed: {exc}")
+                break
+            if len(found) >= MIN_RESULTS_BEFORE_FALLBACK:
+                break
 
-    if len(found) < MIN_RESULTS_BEFORE_FALLBACK:
-        try:
-            found.extend(fetch_pixabay_videos(topic, pixabay_api_key, per_page=limit))
-        except Exception as exc:
-            errors.append(f"Pixabay failed: {exc}")
+    if pixabay_api_key and len(found) < MIN_RESULTS_BEFORE_FALLBACK:
+        for query in queries:
+            try:
+                found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=limit))
+            except Exception as exc:
+                errors.append(f"Pixabay failed: {exc}")
+                break
+            if len(found) >= MIN_RESULTS_BEFORE_FALLBACK:
+                break
 
-    if not found:
-        try:
-            found.extend(fetch_coverr_videos(topic, api_key=coverr_api_key, per_page=limit))
-        except Exception as exc:
-            errors.append(f"Coverr failed: {exc}")
+    if coverr_api_key and not found:
+        for query in queries:
+            try:
+                found.extend(fetch_coverr_videos(query, api_key=coverr_api_key, per_page=limit))
+            except Exception as exc:
+                errors.append(f"Coverr failed: {exc}")
+                break
+            if found:
+                break
 
     unique = []
     seen = set()
@@ -171,10 +224,10 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
             break
 
     if not unique:
-        detail = (
-            "Free stock video clips nahi mile. App owner ko Pexels, Pixabay, ya Coverr API key "
-            "Streamlit secrets mein configure karni hogi."
-        )
+        if not any([pexels_api_key, pixabay_api_key, coverr_api_key]):
+            detail = "Stock video API key secrets empty hain. PEXELS_API_KEY ya PIXABAY_API_KEY mein se ek add karo."
+        else:
+            detail = "Is topic par free stock clips nahi mile. Topic ko short English keywords mein try karo."
         raise VideoFetchError(detail)
 
     return unique

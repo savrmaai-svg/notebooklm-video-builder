@@ -138,9 +138,10 @@ def build_auto_topic(topic, transcript_text):
 
 def get_secret(name):
     try:
-        return st.secrets.get(name, "")
+        value = st.secrets.get(name, "")
     except Exception:
         return ""
+    return str(value).strip()
 
 
 def show_existing_output():
