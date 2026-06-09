@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+input/audio.mp3
+input/transcript.txt
+input/videos/*
+!input/videos/.gitkeep
+
+output/*
+!output/.gitkeep
+final_videoTEMP*
+
+.streamlit/secrets.toml
