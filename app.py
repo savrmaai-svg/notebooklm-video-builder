@@ -2,29 +2,29 @@ from pathlib import Path
 
 import streamlit as st
 
-from api_fetcher import VideoFetchError, fetch_and_download_videos
-from config import (
-    AUDIO_FILE,
-    CROSSFADE_SECONDS,
-    FINAL_VIDEO,
-    FONT,
-    FONT_PATH,
-    FONT_SIZE,
-    FPS,
-    INPUT_DIR,
-    OUTPUT_DIR,
-    SUBTITLE_COLOR,
-    SUBTITLE_FILE,
-    SUBTITLE_MAX_CHARS,
-    SUBTITLE_STROKE_COLOR,
-    SUBTITLE_STROKE_WIDTH,
-    TARGET_SECONDS,
-    TRANSCRIPT_FILE,
-    VIDEO_DIR,
-    VIDEO_SIZE,
-)
 
+BASE_DIR = Path(__file__).resolve().parent
+INPUT_DIR = BASE_DIR / "input"
+VIDEO_DIR = INPUT_DIR / "videos"
+AUDIO_FILE = INPUT_DIR / "audio.mp3"
+TRANSCRIPT_FILE = INPUT_DIR / "transcript.txt"
+OUTPUT_DIR = BASE_DIR / "output"
 
+FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
+SUBTITLE_FILE = OUTPUT_DIR / "subtitles.srt"
+
+TARGET_SECONDS = 10 * 60
+VIDEO_SIZE = (1920, 1080)
+FPS = 30
+CROSSFADE_SECONDS = 0.8
+SUBTITLE_MAX_CHARS = 46
+
+FONT_SIZE = 58
+FONT = "Arial-Bold"
+FONT_PATH = r"C:\Windows\Fonts\Nirmala.ttf"
+SUBTITLE_COLOR = "white"
+SUBTITLE_STROKE_COLOR = "black"
+SUBTITLE_STROKE_WIDTH = 3
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 
 
@@ -245,6 +245,8 @@ def render_app():
                 saved_videos = save_video_uploads(video_uploads)
                 st.info(f"{len(saved_videos)} manual video files save ho gaye.")
             else:
+                from api_fetcher import VideoFetchError, fetch_and_download_videos
+
                 clear_old_videos()
                 progress.progress(10, text="Stock videos search aur download ho rahe hain...")
                 saved_videos = fetch_and_download_videos(
@@ -261,10 +263,10 @@ def render_app():
             create_video()
             st.session_state.video_generated = True
             progress.progress(100, text="Done")
-        except VideoFetchError as exc:
-            st.error(str(exc))
-            return
         except Exception as exc:
+            if exc.__class__.__name__ == "VideoFetchError":
+                st.error(str(exc))
+                return
             st.exception(exc)
             return
 
