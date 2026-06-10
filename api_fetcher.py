@@ -11,7 +11,7 @@ MIN_RESULTS_BEFORE_FALLBACK = 5
 MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
 DEFAULT_CLIP_LIMIT = 8
 MAX_TOPIC_WORDS = 8
-MIN_VALID_CLIP_SECONDS = 2.0
+MIN_VALID_CLIP_SECONDS = 8.0
 KEYWORD_MAP = {
     "kohinoor": ["diamond", "crown jewels", "gold treasure", "india palace", "royal crown"],
     "jallianwala": ["india crowd", "memorial", "historical", "india history"],
@@ -86,8 +86,11 @@ def search_queries(topic):
 
     unique = []
     for query in queries:
-        if query and query not in unique:
-            unique.append(query)
+        if not query:
+            continue
+        enhanced_query = f"{query} cinematic 4k"
+        if enhanced_query not in unique:
+            unique.append(enhanced_query)
     return unique
 
 
@@ -120,7 +123,11 @@ def relevance_score(video, query, source):
 
     if is_landscape(width, height):
         score += 100
-    if duration and 3 <= duration <= 35:
+    if width >= 1920:
+        score += 50
+    elif width >= 1280:
+        score += 30
+    if duration and 8 <= duration <= 30:
         score += 20
     if source == "pexels":
         score += 10
@@ -134,7 +141,10 @@ def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
     if not api_key:
         return []
 
-    url = f"https://api.pexels.com/videos/search?query={quote_plus(topic)}&per_page={per_page}&orientation=landscape"
+    url = (
+        f"https://api.pexels.com/videos/search?query={quote_plus(topic)}"
+        f"&per_page={per_page}&orientation=landscape&min_width=1280"
+    )
     data = _request_json(url, headers={"Authorization": api_key})
     videos = []
 
@@ -166,7 +176,10 @@ def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
     if not api_key:
         return []
 
-    url = f"https://pixabay.com/api/videos/?key={api_key}&q={quote_plus(topic)}&per_page={per_page}"
+    url = (
+        f"https://pixabay.com/api/videos/?key={api_key}&q={quote_plus(topic)}"
+        f"&per_page={per_page}&min_width=1280&video_type=film"
+    )
     data = _request_json(url)
     videos = []
 
