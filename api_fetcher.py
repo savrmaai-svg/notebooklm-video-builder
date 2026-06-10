@@ -8,9 +8,17 @@ import requests
 DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
+MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
 DEFAULT_CLIP_LIMIT = 8
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 2.0
+KEYWORD_MAP = {
+    "kohinoor": ["diamond", "crown jewels", "gold treasure", "india palace", "royal crown"],
+    "jallianwala": ["india crowd", "memorial", "historical", "india history"],
+    "tipu sultan": ["sword warrior", "india fort", "mughal", "royal palace"],
+    "cricket": ["cricket india", "cricket stadium", "cricket bat", "sports crowd"],
+    "mughal": ["india palace", "taj mahal", "mughal architecture", "royal fort"],
+}
 STOP_WORDS = {
     "ki",
     "ka",
@@ -50,12 +58,19 @@ def clean_topic(topic):
 
 
 def search_queries(topic):
-    topic = clean_topic(topic)
-    if not topic:
+    raw_topic = topic.lower()
+    cleaned_topic = clean_topic(topic)
+    if not cleaned_topic:
         return []
 
-    words = topic.split()
-    queries = [topic]
+    words = cleaned_topic.split()
+    queries = []
+
+    for trigger, mapped_queries in KEYWORD_MAP.items():
+        if trigger in raw_topic:
+            queries.extend(mapped_queries)
+
+    queries.append(cleaned_topic)
 
     if len(words) > 3:
         queries.append(" ".join(words[:3]))
@@ -63,9 +78,9 @@ def search_queries(topic):
         queries.append(" ".join(words[:2]))
     queries.extend(
         [
-            f"{topic} cinematic video",
-            f"{topic} documentary",
-            f"{topic} history",
+            f"{cleaned_topic} cinematic video",
+            f"{cleaned_topic} documentary",
+            f"{cleaned_topic} history",
         ]
     )
 
@@ -93,20 +108,49 @@ def _best_pexels_link(video):
     return preferred[0]["link"]
 
 
+def is_landscape(width, height):
+    return bool(width and height and width >= height)
+
+
+def relevance_score(video, query, source):
+    width = video.get("width") or 0
+    height = video.get("height") or 0
+    duration = video.get("duration") or 0
+    score = 0
+
+    if is_landscape(width, height):
+        score += 100
+    if duration and 3 <= duration <= 35:
+        score += 20
+    if source == "pexels":
+        score += 10
+    if query:
+        score += max(0, 10 - len(query.split()))
+
+    return score
+
+
 def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
     if not api_key:
         return []
 
-    url = f"https://api.pexels.com/videos/search?query={quote_plus(topic)}&per_page={per_page}"
+    url = f"https://api.pexels.com/videos/search?query={quote_plus(topic)}&per_page={per_page}&orientation=landscape"
     data = _request_json(url, headers={"Authorization": api_key})
     videos = []
 
     for video in data.get("videos", []):
         link = _best_pexels_link(video)
         if link:
-            videos.append({"source": "pexels", "url": link})
+            videos.append(
+                {
+                    "source": "pexels",
+                    "url": link,
+                    "query": topic,
+                    "score": relevance_score(video, topic, "pexels"),
+                }
+            )
 
-    return videos
+    return sorted(videos, key=lambda item: item.get("score", 0), reverse=True)
 
 
 def _best_pixabay_link(video):
@@ -129,9 +173,16 @@ def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
     for video in data.get("hits", []):
         link = _best_pixabay_link(video)
         if link:
-            videos.append({"source": "pixabay", "url": link})
+            videos.append(
+                {
+                    "source": "pixabay",
+                    "url": link,
+                    "query": topic,
+                    "score": relevance_score(video, topic, "pixabay"),
+                }
+            )
 
-    return videos
+    return sorted(videos, key=lambda item: item.get("score", 0), reverse=True)
 
 
 def _coverr_items(data):
@@ -198,17 +249,17 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
             except Exception as exc:
                 errors.append(f"Pexels failed: {exc}")
                 break
-            if len(found) >= MIN_RESULTS_BEFORE_FALLBACK:
+            if len(found) >= limit:
                 break
 
-    if pixabay_api_key and len(found) < MIN_RESULTS_BEFORE_FALLBACK:
+    if pixabay_api_key and len(found) < MIN_RELEVANT_RESULTS_BEFORE_PIXABAY:
         for query in queries:
             try:
                 found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=limit))
             except Exception as exc:
                 errors.append(f"Pixabay failed: {exc}")
                 break
-            if len(found) >= MIN_RESULTS_BEFORE_FALLBACK:
+            if len(found) >= limit:
                 break
 
     if coverr_api_key and not found:
@@ -223,7 +274,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
 
     unique = []
     seen = set()
-    for video in found:
+    for video in sorted(found, key=lambda item: item.get("score", 0), reverse=True):
         url = video["url"]
         if url not in seen:
             seen.add(url)
