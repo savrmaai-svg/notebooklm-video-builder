@@ -12,6 +12,7 @@ TRANSCRIPT_FILE = INPUT_DIR / "transcript.txt"
 OUTPUT_DIR = BASE_DIR / "output"
 
 FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
+YOUTUBE_SHORTS = OUTPUT_DIR / "youtube_shorts.mp4"
 SUBTITLE_FILE = OUTPUT_DIR / "subtitles.srt"
 
 TARGET_SECONDS = 10 * 60
@@ -52,9 +53,26 @@ def validate_inputs():
         raise FileNotFoundError("NotebookLM audio ko input/audio.mp3 naam se rakho.")
 
 
+def media_duration(ffmpeg, path, timeout=30):
+    import re
+    import subprocess
+
+    result = subprocess.run(
+        [ffmpeg, "-i", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    output = f"{result.stdout}\n{result.stderr}"
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+    if not match:
+        return 0.0
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
 def create_video():
     import math
-    import re
     import subprocess
     import imageio_ffmpeg
 
@@ -69,20 +87,6 @@ def create_video():
     if not video_paths:
         raise FileNotFoundError("input/videos folder mein MP4 videos nahi mile.")
 
-    def media_duration(path):
-        result = subprocess.run(
-            [ffmpeg, "-i", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = f"{result.stdout}\n{result.stderr}"
-        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
-        if not match:
-            return 0.0
-        hours, minutes, seconds = match.groups()
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
     def srt_time(seconds):
         seconds = max(0, float(seconds))
         millis = int(round((seconds - math.floor(seconds)) * 1000))
@@ -92,7 +96,7 @@ def create_video():
         secs = whole % 60
         return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
-    audio_duration = media_duration(AUDIO_FILE)
+    audio_duration = media_duration(ffmpeg, AUDIO_FILE)
     target_duration = min(audio_duration or TARGET_SECONDS, TARGET_SECONDS, 120)
     if target_duration <= 0:
         raise RuntimeError("Audio duration read nahi ho paayi.")
@@ -125,7 +129,7 @@ def create_video():
     index = 0
     while remaining > 0.2:
         source = video_paths[index % len(video_paths)]
-        source_duration = media_duration(source) or 5
+        source_duration = media_duration(ffmpeg, source) or 5
         segment_seconds = min(source_duration, remaining, 12)
         output_segment = temp_dir / f"segment_{index:03}.mp4"
         vf = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=24"
@@ -191,6 +195,53 @@ def create_video():
     )
 
 
+def extract_youtube_shorts():
+    import subprocess
+    import imageio_ffmpeg
+
+    if not FINAL_VIDEO.exists():
+        raise FileNotFoundError("Final video nahi mila, Shorts extract nahi ho sakta.")
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    full_duration = media_duration(ffmpeg, FINAL_VIDEO)
+    if full_duration <= 0:
+        raise RuntimeError("Final video duration read nahi ho paayi.")
+
+    shorts_duration = min(55, full_duration)
+    start_time = max(0, full_duration * 0.30 - shorts_duration / 2)
+    if start_time + shorts_duration > full_duration:
+        start_time = max(0, full_duration - shorts_duration)
+
+    vf = "crop=ih*9/16:ih,scale=1080:1920"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{start_time:.2f}",
+            "-i",
+            str(FINAL_VIDEO),
+            "-t",
+            f"{shorts_duration:.2f}",
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(YOUTUBE_SHORTS),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
 def clear_old_videos():
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     for path in VIDEO_DIR.iterdir():
@@ -231,19 +282,29 @@ def get_secret(name):
 
 
 def show_existing_output():
-    if not FINAL_VIDEO.exists():
+    if not FINAL_VIDEO.exists() and not YOUTUBE_SHORTS.exists():
         return
 
     try:
         st.success("Final video ready hai.")
-        with FINAL_VIDEO.open("rb") as file:
-            st.download_button(
-                "Download final_video.mp4",
-                data=file,
-                file_name="final_video.mp4",
-                mime="video/mp4",
-                use_container_width=True,
-            )
+        if FINAL_VIDEO.exists():
+            with FINAL_VIDEO.open("rb") as file:
+                st.download_button(
+                    "Download Full Video (10 min)",
+                    data=file,
+                    file_name="final_video.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+        if YOUTUBE_SHORTS.exists():
+            with YOUTUBE_SHORTS.open("rb") as file:
+                st.download_button(
+                    "Download YouTube Shorts (55 sec)",
+                    data=file,
+                    file_name="youtube_shorts.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
     except Exception:
         st.warning("Previous output file load nahi ho paayi. Naya video generate karo.")
 
@@ -343,6 +404,8 @@ def render_app():
 
             progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
             create_video()
+            progress.progress(82, text="YouTube Shorts clip extract ho raha hai...")
+            extract_youtube_shorts()
             st.session_state.video_generated = True
             progress.progress(100, text="Done")
         except Exception as exc:
