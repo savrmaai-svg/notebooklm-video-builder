@@ -30,8 +30,8 @@ SUBTITLE_STROKE_COLOR = "black"
 SUBTITLE_STROKE_WIDTH = 3
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
-AUTO_CLIP_LIMIT = 18
-MAX_CUT_SECONDS = 7
+AUTO_CLIP_LIMIT = 32
+MAX_CUT_SECONDS = 5
 
 
 st.set_page_config(
@@ -100,10 +100,17 @@ def create_video():
         secs = whole % 60
         return f"{hours:02}:{minutes:02}:{secs:02},{millis:03}"
 
+    video_durations = []
+    for path in video_paths:
+        duration = media_duration(ffmpeg, path) or MAX_CUT_SECONDS
+        if duration > 0:
+            video_durations.append((path, duration))
+
+    available_unique_duration = sum(min(duration, MAX_CUT_SECONDS) for _, duration in video_durations)
     audio_duration = media_duration(ffmpeg, AUDIO_FILE)
-    target_duration = min(audio_duration or TARGET_SECONDS, TARGET_SECONDS, 120)
+    target_duration = min(audio_duration or TARGET_SECONDS, TARGET_SECONDS, 120, available_unique_duration)
     if target_duration <= 0:
-        raise RuntimeError("Audio duration read nahi ho paayi.")
+        raise RuntimeError("Audio/video duration read nahi ho paayi.")
 
     transcript = ""
     if TRANSCRIPT_FILE.exists():
@@ -130,10 +137,9 @@ def create_video():
 
     segments = []
     remaining = target_duration
-    index = 0
-    while remaining > 0.2:
-        source = video_paths[index % len(video_paths)]
-        source_duration = media_duration(ffmpeg, source) or 5
+    for index, (source, source_duration) in enumerate(video_durations):
+        if remaining <= 0.2:
+            break
         segment_seconds = min(source_duration, remaining, MAX_CUT_SECONDS)
         output_segment = temp_dir / f"segment_{index:03}.mp4"
         max_offset = max(0, source_duration - segment_seconds - 0.1)
@@ -172,7 +178,9 @@ def create_video():
         )
         segments.append(output_segment)
         remaining -= segment_seconds
-        index += 1
+
+    if not segments:
+        raise RuntimeError("Unique video clips render ke liye available nahi hain.")
 
     concat_file = temp_dir / "concat.txt"
     concat_file.write_text(
@@ -394,6 +402,7 @@ def render_app():
             )
         else:
             st.info("Auto mode free stock-video sources se clips fetch karega: Pexels, Pixabay, aur Coverr.")
+            st.caption("App zyada clips download karega aur ek clip ko same video mein repeat nahi karega.")
             st.markdown(
                 "[Pexels](https://www.pexels.com/videos/) | "
                 "[Pixabay](https://pixabay.com/videos/) | "

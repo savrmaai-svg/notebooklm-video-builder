@@ -9,8 +9,8 @@ DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
-DEFAULT_CLIP_LIMIT = 18
-MAX_SEARCH_RESULTS_TO_COLLECT = 36
+DEFAULT_CLIP_LIMIT = 32
+MAX_SEARCH_RESULTS_TO_COLLECT = 80
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 8.0
 KEYWORD_MAP = {
@@ -259,7 +259,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
     errors = []
     found = []
     target_pool_size = max(limit, min(MAX_SEARCH_RESULTS_TO_COLLECT, limit * 2))
-    per_query = min(8, max(4, limit // 2))
+    per_query = min(15, max(8, limit // 2))
 
     if pexels_api_key:
         for query in queries:
