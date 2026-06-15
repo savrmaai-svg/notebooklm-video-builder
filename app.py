@@ -7,7 +7,8 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / "input"
 VIDEO_DIR = INPUT_DIR / "videos"
-AUDIO_FILE = INPUT_DIR / "audio.mp3"
+AUDIO_FILE = INPUT_DIR / "audio.m4a"
+AUDIO_SOURCE_FILE = INPUT_DIR / "audio_source"
 TRANSCRIPT_FILE = INPUT_DIR / "transcript.txt"
 OUTPUT_DIR = BASE_DIR / "output"
 
@@ -28,6 +29,9 @@ SUBTITLE_COLOR = "white"
 SUBTITLE_STROKE_COLOR = "black"
 SUBTITLE_STROKE_WIDTH = 3
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
+AUTO_CLIP_LIMIT = 18
+MAX_CUT_SECONDS = 7
 
 
 st.set_page_config(
@@ -50,7 +54,7 @@ def ensure_folders():
 
 def validate_inputs():
     if not AUDIO_FILE.exists():
-        raise FileNotFoundError("NotebookLM audio ko input/audio.mp3 naam se rakho.")
+        raise FileNotFoundError("NotebookLM audio upload karo. App usme se sirf audio track use karega.")
 
 
 def media_duration(ffmpeg, path, timeout=30):
@@ -130,13 +134,19 @@ def create_video():
     while remaining > 0.2:
         source = video_paths[index % len(video_paths)]
         source_duration = media_duration(ffmpeg, source) or 5
-        segment_seconds = min(source_duration, remaining, 12)
+        segment_seconds = min(source_duration, remaining, MAX_CUT_SECONDS)
         output_segment = temp_dir / f"segment_{index:03}.mp4"
+        max_offset = max(0, source_duration - segment_seconds - 0.1)
+        start_offset = (index * 3.7) % max_offset if max_offset > 0 else 0
         vf = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=24"
-        subprocess.run(
+        command = [
+            ffmpeg,
+            "-y",
+        ]
+        if start_offset > 0:
+            command.extend(["-ss", f"{start_offset:.2f}"])
+        command.extend(
             [
-                ffmpeg,
-                "-y",
                 "-i",
                 str(source),
                 "-t",
@@ -151,7 +161,10 @@ def create_video():
                 "-pix_fmt",
                 "yuv420p",
                 str(output_segment),
-            ],
+            ]
+        )
+        subprocess.run(
+            command,
             check=True,
             capture_output=True,
             text=True,
@@ -249,6 +262,46 @@ def clear_old_videos():
             path.unlink()
 
 
+def clear_old_audio():
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for path in INPUT_DIR.glob("audio*"):
+        if path.is_file():
+            path.unlink()
+
+
+def save_and_extract_audio(uploaded_file):
+    import subprocess
+    import imageio_ffmpeg
+
+    clear_old_audio()
+    suffix = Path(uploaded_file.name).suffix.lower() or ".mp3"
+    source_path = AUDIO_SOURCE_FILE.with_suffix(suffix)
+    save_uploaded_file(uploaded_file, source_path)
+
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-acodec",
+            "aac",
+            "-b:a",
+            "160k",
+            str(AUDIO_FILE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if media_duration(ffmpeg, AUDIO_FILE) <= 0:
+        raise RuntimeError("Uploaded file se audio track extract nahi ho paaya.")
+    return AUDIO_FILE
+
+
 def save_video_uploads(uploaded_videos):
     clear_old_videos()
     saved_paths = []
@@ -313,7 +366,7 @@ def render_app():
     ensure_folders()
 
     st.title("NotebookLM Video Builder")
-    st.caption("Topic aur MP3 audio do. App relevant video clips automatically fetch karke synced video generate karega.")
+    st.caption("Topic aur audio do. App relevant copyright-free stock video clips automatically fetch karke synced video generate karega.")
 
     left, right = st.columns([0.52, 0.48], gap="large")
 
@@ -328,8 +381,8 @@ def render_app():
             horizontal=True,
         )
         audio_upload = st.file_uploader(
-            "NotebookLM Audio (MP3)",
-            type=["mp3"],
+            "NotebookLM Audio / Video Audio",
+            type=SUPPORTED_AUDIO_UPLOADS,
             accept_multiple_files=False,
         )
         video_uploads = None
@@ -341,6 +394,11 @@ def render_app():
             )
         else:
             st.info("Auto mode free stock-video sources se clips fetch karega: Pexels, Pixabay, aur Coverr.")
+            st.markdown(
+                "[Pexels](https://www.pexels.com/videos/) | "
+                "[Pixabay](https://pixabay.com/videos/) | "
+                "[Coverr](https://coverr.co/) free stock-video sources use honge."
+            )
         transcript_text = st.text_area(
             "Hindi Transcript / Subtitles (optional)",
             height=180,
@@ -372,7 +430,13 @@ def render_app():
         st.error("Auto mode ke liye topic enter karo ya transcript paste karo.")
         return
 
-    save_uploaded_file(audio_upload, AUDIO_FILE)
+    try:
+        save_and_extract_audio(audio_upload)
+    except Exception as exc:
+        st.error("Audio extract nahi ho paaya. MP3, M4A, WAV, MP4, MOV ya WEBM file try karo.")
+        st.exception(exc)
+        return
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     if transcript_text.strip():
@@ -398,7 +462,7 @@ def render_app():
                     pexels_api_key=get_secret("PEXELS_API_KEY"),
                     pixabay_api_key=get_secret("PIXABAY_API_KEY"),
                     coverr_api_key=get_secret("COVERR_API_KEY"),
-                    limit=8,
+                    limit=AUTO_CLIP_LIMIT,
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 

@@ -9,7 +9,8 @@ DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
-DEFAULT_CLIP_LIMIT = 8
+DEFAULT_CLIP_LIMIT = 18
+MAX_SEARCH_RESULTS_TO_COLLECT = 36
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 8.0
 KEYWORD_MAP = {
@@ -81,6 +82,9 @@ def search_queries(topic):
             f"{cleaned_topic} cinematic video",
             f"{cleaned_topic} documentary",
             f"{cleaned_topic} history",
+            f"{cleaned_topic} travel",
+            f"{cleaned_topic} monument",
+            f"{cleaned_topic} landscape",
         ]
     )
 
@@ -254,31 +258,33 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
 
     errors = []
     found = []
+    target_pool_size = max(limit, min(MAX_SEARCH_RESULTS_TO_COLLECT, limit * 2))
+    per_query = min(8, max(4, limit // 2))
 
     if pexels_api_key:
         for query in queries:
             try:
-                found.extend(fetch_pexels_videos(query, pexels_api_key, per_page=limit))
+                found.extend(fetch_pexels_videos(query, pexels_api_key, per_page=per_query))
             except Exception as exc:
                 errors.append(f"Pexels failed: {exc}")
                 break
-            if len(found) >= limit:
+            if len(found) >= target_pool_size:
                 break
 
-    if pixabay_api_key and len(found) < MIN_RELEVANT_RESULTS_BEFORE_PIXABAY:
+    if pixabay_api_key and len(found) < limit:
         for query in queries:
             try:
-                found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=limit))
+                found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=per_query))
             except Exception as exc:
                 errors.append(f"Pixabay failed: {exc}")
                 break
-            if len(found) >= limit:
+            if len(found) >= target_pool_size:
                 break
 
     if coverr_api_key and not found:
         for query in queries:
             try:
-                found.extend(fetch_coverr_videos(query, api_key=coverr_api_key, per_page=limit))
+                found.extend(fetch_coverr_videos(query, api_key=coverr_api_key, per_page=per_query))
             except Exception as exc:
                 errors.append(f"Coverr failed: {exc}")
                 break
