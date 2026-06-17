@@ -32,6 +32,7 @@ SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
 AUTO_CLIP_LIMIT = 32
 MAX_CUT_SECONDS = 5
+MAX_ADAPTIVE_CUT_SECONDS = 16
 AUDIO_FITTED_FILE = OUTPUT_DIR / "audio_fitted.m4a"
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -182,13 +183,17 @@ def create_video(target_seconds):
         if duration > 0:
             video_durations.append((path, duration))
 
-    available_unique_duration = sum(min(duration, MAX_CUT_SECONDS) for _, duration in video_durations)
     requested_duration = min(float(target_seconds), TARGET_SECONDS)
+    adaptive_cut_seconds = min(
+        MAX_ADAPTIVE_CUT_SECONDS,
+        max(MAX_CUT_SECONDS, requested_duration / max(1, len(video_durations))),
+    )
+    available_unique_duration = sum(min(duration, adaptive_cut_seconds) for _, duration in video_durations)
     target_duration = min(requested_duration, available_unique_duration)
     if target_duration <= 0:
         raise RuntimeError("Audio/video duration read nahi ho paayi.")
     if target_duration < requested_duration - 1:
-        needed_clips = math.ceil(requested_duration / MAX_CUT_SECONDS)
+        needed_clips = math.ceil(requested_duration / adaptive_cut_seconds)
         available_clips = len(video_durations)
         raise RuntimeError(
             f"Selected duration ke liye unique clips kam hain. "
@@ -226,7 +231,7 @@ def create_video(target_seconds):
     for index, (source, source_duration) in enumerate(video_durations):
         if remaining <= 0.2:
             break
-        segment_seconds = min(source_duration, remaining, MAX_CUT_SECONDS)
+        segment_seconds = min(source_duration, remaining, adaptive_cut_seconds)
         output_segment = temp_dir / f"segment_{index:03}.mp4"
         max_offset = max(0, source_duration - segment_seconds - 0.1)
         start_offset = (index * 3.7) % max_offset if max_offset > 0 else 0
@@ -490,9 +495,10 @@ def render_app():
             help="Selected duration ke hisaab se audio speed auto-fit hogi.",
         )
         selected_duration = OUTPUT_DURATION_OPTIONS[duration_label]
-        estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
+        min_estimated_clips = max(1, int((selected_duration + MAX_ADAPTIVE_CUT_SECONDS - 1) // MAX_ADAPTIVE_CUT_SECONDS))
+        ideal_estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
         st.caption(
-            f"{duration_label} output ke liye approx {estimated_clips} unique clips lagenge. "
+            f"{duration_label} output ke liye approx {min_estimated_clips}-{ideal_estimated_clips} unique clips lagenge. "
             "Audio speed automatic adjust hogi."
         )
         audio_upload = st.file_uploader(
@@ -578,7 +584,7 @@ def render_app():
                     pexels_api_key=get_secret("PEXELS_API_KEY"),
                     pixabay_api_key=get_secret("PIXABAY_API_KEY"),
                     coverr_api_key=get_secret("COVERR_API_KEY"),
-                    limit=max(AUTO_CLIP_LIMIT, min(80, estimated_clips + 10)),
+                    limit=max(AUTO_CLIP_LIMIT, min(80, ideal_estimated_clips + 10)),
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 
