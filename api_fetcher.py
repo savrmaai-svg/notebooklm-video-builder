@@ -14,6 +14,28 @@ MAX_SEARCH_RESULTS_TO_COLLECT = 120
 MAX_QUERY_COUNT = 80
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 8.0
+CINEMATIC_FALLBACK_QUERIES = [
+    "cinematic movie scene dark dramatic",
+    "film director movie set cinematic",
+    "dramatic lighting close up face",
+    "film noir dark atmosphere",
+    "mysterious silhouette night",
+    "detective investigation night",
+    "secret files classified documents",
+    "conspiracy board investigation",
+    "dark alley night cinematic",
+    "neon city night cinematic",
+    "rain window night city",
+    "old film projector vintage",
+    "space moon astronaut cinematic",
+    "nasa control room cinematic",
+    "storm lightning dramatic sky",
+    "fog mysterious forest night",
+    "dark ocean waves cinematic",
+    "abandoned building interior",
+    "smoke fog mysterious",
+    "typewriter vintage dramatic",
+]
 KEYWORD_MAP = {
     "kohinoor": ["diamond", "crown jewels", "gold treasure", "india palace", "royal crown"],
     "jallianwala": ["india crowd", "memorial", "historical", "india history"],
@@ -104,6 +126,8 @@ def search_queries(topic):
             ]
         )
 
+    queries.extend(CINEMATIC_FALLBACK_QUERIES)
+
     unique = []
     for query in queries:
         if not query:
@@ -164,7 +188,7 @@ def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
         return []
 
     url = (
-        f"https://api.pexels.com/videos/search?query={quote_plus(topic)}"
+        f"https://api.pexels.com/v1/videos/search?query={quote_plus(topic)}"
         f"&per_page={per_page}&orientation=landscape&min_width=1280"
     )
     data = _request_json(url, headers={"Authorization": api_key})
@@ -179,6 +203,32 @@ def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
                     "url": link,
                     "query": topic,
                     "score": relevance_score(video, topic, "pexels"),
+                }
+            )
+
+    return sorted(videos, key=lambda item: item.get("score", 0), reverse=True)
+
+
+def fetch_pexels_popular_videos(api_key, per_page=DEFAULT_CLIP_LIMIT):
+    if not api_key:
+        return []
+
+    url = (
+        "https://api.pexels.com/v1/videos/popular"
+        f"?per_page={per_page}&min_width=1280&min_duration={int(MIN_VALID_CLIP_SECONDS)}"
+    )
+    data = _request_json(url, headers={"Authorization": api_key})
+    videos = []
+
+    for video in data.get("videos", []):
+        link = _best_pexels_link(video)
+        if link:
+            videos.append(
+                {
+                    "source": "pexels_popular",
+                    "url": link,
+                    "query": "popular cinematic",
+                    "score": relevance_score(video, "popular cinematic", "pexels") + 5,
                 }
             )
 
@@ -200,7 +250,7 @@ def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
 
     url = (
         f"https://pixabay.com/api/videos/?key={api_key}&q={quote_plus(topic)}"
-        f"&per_page={per_page}&min_width=1280&video_type=film"
+        f"&per_page={per_page}&min_width=1280&video_type=film&order=popular&safesearch=true"
     )
     data = _request_json(url)
     videos = []
@@ -288,6 +338,11 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
                 break
             if len(found) >= target_pool_size:
                 break
+        if len(found) < limit:
+            try:
+                found.extend(fetch_pexels_popular_videos(pexels_api_key, per_page=min(80, limit)))
+            except Exception as exc:
+                errors.append(f"Pexels popular failed: {exc}")
 
     if pixabay_api_key and len(found) < limit:
         for query in queries:
