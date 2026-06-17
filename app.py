@@ -30,7 +30,7 @@ SUBTITLE_STROKE_COLOR = "black"
 SUBTITLE_STROKE_WIDTH = 3
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
-AUTO_CLIP_LIMIT = 60
+AUTO_CLIP_LIMIT = 100
 MAX_CUT_SECONDS = 5
 MAX_ADAPTIVE_CUT_SECONDS = 16
 OUTPUT_DURATION_OPTIONS = {
@@ -370,6 +370,11 @@ def build_auto_topic(topic, transcript_text):
     return ""
 
 
+def count_topic_lines(topic):
+    lines = [line.strip() for line in topic.splitlines() if line.strip()]
+    return len(lines) if lines else 1
+
+
 def get_secret(name):
     try:
         value = st.secrets.get(name, "")
@@ -489,6 +494,7 @@ def render_app():
         return
 
     search_topic = build_auto_topic(topic, transcript_text)
+    topic_line_count = count_topic_lines(search_topic)
 
     if video_source == "Auto fetch stock videos" and not search_topic:
         st.error("Auto mode ke liye topic enter karo ya transcript paste karo.")
@@ -526,7 +532,7 @@ def render_app():
                     pexels_api_key=get_secret("PEXELS_API_KEY"),
                     pixabay_api_key=get_secret("PIXABAY_API_KEY"),
                     coverr_api_key=get_secret("COVERR_API_KEY"),
-                    limit=max(AUTO_CLIP_LIMIT, min(80, ideal_estimated_clips + 10)),
+                    limit=max(AUTO_CLIP_LIMIT, min(140, max(topic_line_count, ideal_estimated_clips) + 20)),
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 

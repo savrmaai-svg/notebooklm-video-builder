@@ -9,11 +9,11 @@ DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
-DEFAULT_CLIP_LIMIT = 60
-MAX_SEARCH_RESULTS_TO_COLLECT = 120
-MAX_QUERY_COUNT = 80
+DEFAULT_CLIP_LIMIT = 100
+MAX_SEARCH_RESULTS_TO_COLLECT = 220
+MAX_QUERY_COUNT = 140
 MAX_TOPIC_WORDS = 8
-MIN_VALID_CLIP_SECONDS = 8.0
+MIN_VALID_CLIP_SECONDS = 3.0
 CINEMATIC_FALLBACK_QUERIES = [
     "cinematic movie scene dark dramatic",
     "film director movie set cinematic",
@@ -101,21 +101,22 @@ def search_queries(topic):
     if not cleaned_topics:
         return []
 
-    queries = []
+    priority_queries = []
+    extra_queries = []
 
     for trigger, mapped_queries in KEYWORD_MAP.items():
         if trigger in raw_topic:
-            queries.extend(mapped_queries)
+            extra_queries.extend(mapped_queries)
 
     for cleaned_topic in cleaned_topics:
         words = cleaned_topic.split()
-        queries.append(cleaned_topic)
+        priority_queries.append(cleaned_topic)
 
         if len(words) > 3:
-            queries.append(" ".join(words[:3]))
+            extra_queries.append(" ".join(words[:3]))
         if len(words) > 1:
-            queries.append(" ".join(words[:2]))
-        queries.extend(
+            extra_queries.append(" ".join(words[:2]))
+        extra_queries.extend(
             [
                 f"{cleaned_topic} cinematic video",
                 f"{cleaned_topic} documentary",
@@ -126,10 +127,10 @@ def search_queries(topic):
             ]
         )
 
-    queries.extend(CINEMATIC_FALLBACK_QUERIES)
+    extra_queries.extend(CINEMATIC_FALLBACK_QUERIES)
 
     unique = []
-    for query in queries:
+    for query in priority_queries + extra_queries:
         if not query:
             continue
         enhanced_query = f"{query} cinematic 4k"
@@ -183,7 +184,7 @@ def relevance_score(video, query, source):
     return score
 
 
-def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
+def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT, query_index=0):
     if not api_key:
         return []
 
@@ -203,6 +204,7 @@ def fetch_pexels_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
                     "url": link,
                     "query": topic,
                     "score": relevance_score(video, topic, "pexels"),
+                    "query_index": query_index,
                 }
             )
 
@@ -244,7 +246,7 @@ def _best_pixabay_link(video):
     return None
 
 
-def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
+def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT, query_index=0):
     if not api_key:
         return []
 
@@ -264,6 +266,7 @@ def fetch_pixabay_videos(topic, api_key, per_page=DEFAULT_CLIP_LIMIT):
                     "url": link,
                     "query": topic,
                     "score": relevance_score(video, topic, "pixabay"),
+                    "query_index": query_index,
                 }
             )
 
@@ -327,12 +330,12 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
     errors = []
     found = []
     target_pool_size = max(limit, min(MAX_SEARCH_RESULTS_TO_COLLECT, limit * 2))
-    per_query = 3 if len(queries) > 20 else min(15, max(8, limit // 2))
+    per_query = 2 if len(queries) > 40 else 3 if len(queries) > 20 else min(15, max(8, limit // 2))
 
     if pexels_api_key:
-        for query in queries:
+        for query_index, query in enumerate(queries):
             try:
-                found.extend(fetch_pexels_videos(query, pexels_api_key, per_page=per_query))
+                found.extend(fetch_pexels_videos(query, pexels_api_key, per_page=per_query, query_index=query_index))
             except Exception as exc:
                 errors.append(f"Pexels failed: {exc}")
                 break
@@ -345,9 +348,9 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
                 errors.append(f"Pexels popular failed: {exc}")
 
     if pixabay_api_key and len(found) < limit:
-        for query in queries:
+        for query_index, query in enumerate(queries):
             try:
-                found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=per_query))
+                found.extend(fetch_pixabay_videos(query, pixabay_api_key, per_page=per_query, query_index=query_index))
             except Exception as exc:
                 errors.append(f"Pixabay failed: {exc}")
                 break
@@ -366,7 +369,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
 
     unique = []
     seen = set()
-    for video in sorted(found, key=lambda item: item.get("score", 0), reverse=True):
+    for video in sorted(found, key=lambda item: (item.get("query_index", 9999), -item.get("score", 0))):
         url = video["url"]
         if url not in seen:
             seen.add(url)
