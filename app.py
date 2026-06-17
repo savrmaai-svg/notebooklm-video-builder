@@ -46,6 +46,29 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] {
+        width: 100%;
+        max-width: 100%;
+        margin-bottom: 0.55rem;
+    }
+
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] > div {
+        width: 100%;
+        max-width: 100%;
+    }
+
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] div {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 def save_uploaded_file(uploaded_file, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -445,9 +468,15 @@ def render_app():
     left, right = st.columns([0.52, 0.48], gap="large")
 
     with left:
-        topic = st.text_input(
+        topic = st.text_area(
             "Topic",
-            placeholder="Kohinoor diamond history",
+            height=96,
+            placeholder=(
+                "1. film director cinematic dark\n"
+                "2. movie set dramatic lighting\n"
+                "3. camera cinematography closeup\n"
+                "4. hollywood studio"
+            ),
         )
         video_source = st.radio(
             "Video source",
