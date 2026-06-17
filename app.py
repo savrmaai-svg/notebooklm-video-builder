@@ -32,6 +32,13 @@ SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
 AUTO_CLIP_LIMIT = 32
 MAX_CUT_SECONDS = 5
+AUDIO_FITTED_FILE = OUTPUT_DIR / "audio_fitted.m4a"
+OUTPUT_DURATION_OPTIONS = {
+    "1-2 minutes demo": 120,
+    "2-3 minutes": 180,
+    "4-5 minutes": 300,
+    "5-6 minutes": 360,
+}
 
 
 st.set_page_config(
@@ -75,7 +82,53 @@ def media_duration(ffmpeg, path, timeout=30):
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def create_video():
+def atempo_filter(speed_factor):
+    values = []
+    remaining = max(0.1, float(speed_factor))
+    while remaining > 2.0:
+        values.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5:
+        values.append(0.5)
+        remaining /= 0.5
+    values.append(remaining)
+    return ",".join(f"atempo={value:.4f}" for value in values)
+
+
+def fit_audio_to_duration(ffmpeg, target_duration):
+    import subprocess
+
+    audio_duration = media_duration(ffmpeg, AUDIO_FILE)
+    if audio_duration <= 0:
+        raise RuntimeError("Audio duration read nahi ho paayi.")
+
+    speed_factor = audio_duration / target_duration
+    filter_chain = atempo_filter(speed_factor)
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(AUDIO_FILE),
+            "-filter:a",
+            filter_chain,
+            "-t",
+            f"{target_duration:.2f}",
+            "-acodec",
+            "aac",
+            "-b:a",
+            "160k",
+            str(AUDIO_FITTED_FILE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    return AUDIO_FITTED_FILE, speed_factor
+
+
+def create_video(target_seconds):
     import math
     import subprocess
     import imageio_ffmpeg
@@ -107,10 +160,20 @@ def create_video():
             video_durations.append((path, duration))
 
     available_unique_duration = sum(min(duration, MAX_CUT_SECONDS) for _, duration in video_durations)
-    audio_duration = media_duration(ffmpeg, AUDIO_FILE)
-    target_duration = min(audio_duration or TARGET_SECONDS, TARGET_SECONDS, 120, available_unique_duration)
+    requested_duration = min(float(target_seconds), TARGET_SECONDS)
+    target_duration = min(requested_duration, available_unique_duration)
     if target_duration <= 0:
         raise RuntimeError("Audio/video duration read nahi ho paayi.")
+    if target_duration < requested_duration - 1:
+        needed_clips = math.ceil(requested_duration / MAX_CUT_SECONDS)
+        available_clips = len(video_durations)
+        raise RuntimeError(
+            f"Selected duration ke liye unique clips kam hain. "
+            f"Need approx {needed_clips} clips, available {available_clips}. "
+            f"Shorter duration choose karo ya topic broad karo."
+        )
+
+    fitted_audio_file, audio_speed = fit_audio_to_duration(ffmpeg, target_duration)
 
     transcript = ""
     if TRANSCRIPT_FILE.exists():
@@ -199,7 +262,7 @@ def create_video():
             "-i",
             str(concat_file),
             "-i",
-            str(AUDIO_FILE),
+            str(fitted_audio_file),
             "-t",
             f"{target_duration:.2f}",
             "-c:v",
@@ -212,8 +275,9 @@ def create_video():
         check=True,
         capture_output=True,
         text=True,
-        timeout=240,
+        timeout=420,
     )
+    return target_duration, audio_speed
 
 
 def extract_youtube_shorts():
@@ -275,6 +339,8 @@ def clear_old_audio():
     for path in INPUT_DIR.glob("audio*"):
         if path.is_file():
             path.unlink()
+    if AUDIO_FITTED_FILE.exists():
+        AUDIO_FITTED_FILE.unlink()
 
 
 def save_and_extract_audio(uploaded_file):
@@ -388,6 +454,18 @@ def render_app():
             ["Auto fetch stock videos", "Manual upload"],
             horizontal=True,
         )
+        duration_label = st.selectbox(
+            "Output duration",
+            list(OUTPUT_DURATION_OPTIONS.keys()),
+            index=1,
+            help="Selected duration ke hisaab se audio speed auto-fit hogi.",
+        )
+        selected_duration = OUTPUT_DURATION_OPTIONS[duration_label]
+        estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
+        st.caption(
+            f"{duration_label} output ke liye approx {estimated_clips} unique clips lagenge. "
+            "Audio speed automatic adjust hogi."
+        )
         audio_upload = st.file_uploader(
             "NotebookLM Audio / Video Audio",
             type=SUPPORTED_AUDIO_UPLOADS,
@@ -471,12 +549,16 @@ def render_app():
                     pexels_api_key=get_secret("PEXELS_API_KEY"),
                     pixabay_api_key=get_secret("PIXABAY_API_KEY"),
                     coverr_api_key=get_secret("COVERR_API_KEY"),
-                    limit=AUTO_CLIP_LIMIT,
+                    limit=max(AUTO_CLIP_LIMIT, min(80, estimated_clips + 10)),
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 
             progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
-            create_video()
+            final_duration, audio_speed = create_video(selected_duration)
+            st.info(
+                f"Output duration: {final_duration / 60:.1f} minutes. "
+                f"Audio speed: {audio_speed:.2f}x."
+            )
             progress.progress(82, text="YouTube Shorts clip extract ho raha hai...")
             extract_youtube_shorts()
             st.session_state.video_generated = True
