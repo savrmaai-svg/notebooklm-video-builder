@@ -30,7 +30,7 @@ SUBTITLE_STROKE_COLOR = "black"
 SUBTITLE_STROKE_WIDTH = 3
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mov", "mkv", "webm"]
-AUTO_CLIP_LIMIT = 32
+AUTO_CLIP_LIMIT = 60
 MAX_CUT_SECONDS = 5
 MAX_ADAPTIVE_CUT_SECONDS = 16
 AUDIO_FITTED_FILE = OUTPUT_DIR / "audio_fitted.m4a"
@@ -192,14 +192,7 @@ def create_video(target_seconds):
     target_duration = min(requested_duration, available_unique_duration)
     if target_duration <= 0:
         raise RuntimeError("Audio/video duration read nahi ho paayi.")
-    if target_duration < requested_duration - 1:
-        needed_clips = math.ceil(requested_duration / adaptive_cut_seconds)
-        available_clips = len(video_durations)
-        raise RuntimeError(
-            f"Selected duration ke liye unique clips kam hain. "
-            f"Need approx {needed_clips} clips, available {available_clips}. "
-            f"Shorter duration choose karo ya topic broad karo."
-        )
+    duration_was_shortened = target_duration < requested_duration - 1
 
     fitted_audio_file, audio_speed = fit_audio_to_duration(ffmpeg, target_duration)
 
@@ -305,7 +298,7 @@ def create_video(target_seconds):
         text=True,
         timeout=420,
     )
-    return target_duration, audio_speed
+    return target_duration, audio_speed, duration_was_shortened
 
 
 def extract_youtube_shorts():
@@ -499,7 +492,7 @@ def render_app():
         ideal_estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
         st.caption(
             f"{duration_label} output ke liye approx {min_estimated_clips}-{ideal_estimated_clips} unique clips lagenge. "
-            "Audio speed automatic adjust hogi."
+            "Har line alag search query ki tarah use hogi. Audio speed automatic adjust hogi."
         )
         audio_upload = st.file_uploader(
             "NotebookLM Audio / Video Audio",
@@ -589,7 +582,12 @@ def render_app():
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 
             progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
-            final_duration, audio_speed = create_video(selected_duration)
+            final_duration, audio_speed, duration_was_shortened = create_video(selected_duration)
+            if duration_was_shortened:
+                st.warning(
+                    "Selected duration se kam video bana kyunki unique usable clips kam mile. "
+                    "App ne repeat kiye bina maximum possible duration banaya."
+                )
             st.info(
                 f"Output duration: {final_duration / 60:.1f} minutes. "
                 f"Audio speed: {audio_speed:.2f}x."

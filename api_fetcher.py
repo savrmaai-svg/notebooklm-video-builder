@@ -9,8 +9,9 @@ DOWNLOAD_TIMEOUT = 45
 SEARCH_TIMEOUT = 20
 MIN_RESULTS_BEFORE_FALLBACK = 5
 MIN_RELEVANT_RESULTS_BEFORE_PIXABAY = 3
-DEFAULT_CLIP_LIMIT = 32
-MAX_SEARCH_RESULTS_TO_COLLECT = 80
+DEFAULT_CLIP_LIMIT = 60
+MAX_SEARCH_RESULTS_TO_COLLECT = 120
+MAX_QUERY_COUNT = 80
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 8.0
 KEYWORD_MAP = {
@@ -58,35 +59,50 @@ def clean_topic(topic):
     return " ".join(words[:MAX_TOPIC_WORDS])
 
 
+def topic_lines(topic):
+    lines = []
+    for line in topic.splitlines():
+        line = re.sub(r"^\s*\d+[\).\-\s]+", "", line).strip()
+        cleaned = clean_topic(line)
+        if cleaned:
+            lines.append(cleaned)
+    if lines:
+        return lines[:MAX_QUERY_COUNT]
+
+    cleaned = clean_topic(topic)
+    return [cleaned] if cleaned else []
+
+
 def search_queries(topic):
     raw_topic = topic.lower()
-    cleaned_topic = clean_topic(topic)
-    if not cleaned_topic:
+    cleaned_topics = topic_lines(topic)
+    if not cleaned_topics:
         return []
 
-    words = cleaned_topic.split()
     queries = []
 
     for trigger, mapped_queries in KEYWORD_MAP.items():
         if trigger in raw_topic:
             queries.extend(mapped_queries)
 
-    queries.append(cleaned_topic)
+    for cleaned_topic in cleaned_topics:
+        words = cleaned_topic.split()
+        queries.append(cleaned_topic)
 
-    if len(words) > 3:
-        queries.append(" ".join(words[:3]))
-    if len(words) > 1:
-        queries.append(" ".join(words[:2]))
-    queries.extend(
-        [
-            f"{cleaned_topic} cinematic video",
-            f"{cleaned_topic} documentary",
-            f"{cleaned_topic} history",
-            f"{cleaned_topic} travel",
-            f"{cleaned_topic} monument",
-            f"{cleaned_topic} landscape",
-        ]
-    )
+        if len(words) > 3:
+            queries.append(" ".join(words[:3]))
+        if len(words) > 1:
+            queries.append(" ".join(words[:2]))
+        queries.extend(
+            [
+                f"{cleaned_topic} cinematic video",
+                f"{cleaned_topic} documentary",
+                f"{cleaned_topic} history",
+                f"{cleaned_topic} travel",
+                f"{cleaned_topic} monument",
+                f"{cleaned_topic} landscape",
+            ]
+        )
 
     unique = []
     for query in queries:
@@ -95,6 +111,8 @@ def search_queries(topic):
         enhanced_query = f"{query} cinematic 4k"
         if enhanced_query not in unique:
             unique.append(enhanced_query)
+        if len(unique) >= MAX_QUERY_COUNT:
+            break
     return unique
 
 
@@ -259,7 +277,7 @@ def search_stock_videos(topic, pexels_api_key=None, pixabay_api_key=None, coverr
     errors = []
     found = []
     target_pool_size = max(limit, min(MAX_SEARCH_RESULTS_TO_COLLECT, limit * 2))
-    per_query = min(15, max(8, limit // 2))
+    per_query = 3 if len(queries) > 20 else min(15, max(8, limit // 2))
 
     if pexels_api_key:
         for query in queries:
