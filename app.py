@@ -37,7 +37,11 @@ MAX_CUT_SECONDS = 5
 MAX_ADAPTIVE_CUT_SECONDS = 16
 MAX_IMAGE_SCENE_SECONDS = 12
 IMAGE_SCENE_SECONDS = 7
-CREATION_MODES = ["Stock Video Documentary", "Cinematic Cartoon Story"]
+CREATION_MODES = [
+    "Stock Video Documentary",
+    "Cinematic Image Story",
+    "2D Cartoon Episode (Lip Sync)",
+]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
     "2-3 minutes": 180,
@@ -416,6 +420,40 @@ def create_cinematic_story(target_seconds):
     return target_duration, duration_was_shortened
 
 
+def create_cartoon_episode(target_seconds):
+    import imageio_ffmpeg
+
+    from cartoon_engine import BACKGROUND_SECONDS, render_cartoon_episode
+
+    ensure_folders()
+    validate_inputs()
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    image_paths = sorted(
+        path for path in IMAGE_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    if not image_paths:
+        raise FileNotFoundError("Cartoon episode ke liye scene backgrounds nahi mile.")
+
+    requested_duration = min(float(target_seconds), TARGET_SECONDS)
+    audio_duration = media_duration(ffmpeg, AUDIO_FILE)
+    if audio_duration > 0:
+        requested_duration = min(requested_duration, audio_duration)
+    available_unique_duration = len(image_paths) * BACKGROUND_SECONDS
+    target_duration = min(requested_duration, available_unique_duration)
+    if target_duration <= 0:
+        raise RuntimeError("Cartoon episode duration prepare nahi ho paayi.")
+
+    render_cartoon_episode(
+        ffmpeg=ffmpeg,
+        audio_path=AUDIO_FILE,
+        background_paths=image_paths,
+        output_path=FINAL_VIDEO,
+        duration=target_duration,
+    )
+    return target_duration, target_duration < requested_duration - 1
+
+
 def extract_youtube_shorts():
     import subprocess
     import imageio_ffmpeg
@@ -632,7 +670,7 @@ def render_app():
         min_estimated_clips = max(1, int((selected_duration + MAX_ADAPTIVE_CUT_SECONDS - 1) // MAX_ADAPTIVE_CUT_SECONDS))
         ideal_estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
         ideal_estimated_images = max(1, int((selected_duration + IMAGE_SCENE_SECONDS - 1) // IMAGE_SCENE_SECONDS))
-        if creation_mode == "Cinematic Cartoon Story":
+        if creation_mode in {"Cinematic Image Story", "2D Cartoon Episode (Lip Sync)"}:
             st.caption(
                 f"{duration_label} output ke liye approx {ideal_estimated_images} scene images fetch hongi. "
                 "Background story ke saath change hoga aur audio original speed par rahega."
@@ -662,10 +700,21 @@ def render_app():
                 "[Pixabay](https://pixabay.com/videos/) | "
                 "[Coverr](https://coverr.co/) free stock-video sources use honge."
             )
+        elif creation_mode == "Cinematic Image Story":
+            st.info(
+                "Cinematic Image Story mode transcript/topic ke scene ke hisaab se licensed images fetch karke "
+                "cartoon color treatment aur changing camera motion add karega."
+            )
+            st.markdown(
+                "[Pexels](https://www.pexels.com/) | "
+                "[Pixabay](https://pixabay.com/) | "
+                "[Wikimedia Commons](https://commons.wikimedia.org/) | "
+                "[Openverse](https://openverse.org/)"
+            )
         else:
             st.info(
-                "Cinematic Cartoon Story mode transcript/topic ke scene ke hisaab se licensed images fetch karke "
-                "cartoon color treatment aur changing camera motion add karega."
+                "2D Cartoon Episode mode fixed original cartoon characters, audio-reactive mouth movement, "
+                "blinking, body motion aur story-wise changing backgrounds render karega."
             )
             st.markdown(
                 "[Pexels](https://www.pexels.com/) | "
@@ -679,7 +728,12 @@ def render_app():
             placeholder="Yahan Hindi transcript paste karo.",
         )
 
-        button_label = "Generate Cinematic Cartoon Story" if creation_mode == "Cinematic Cartoon Story" else "Generate Professional Video"
+        if creation_mode == "2D Cartoon Episode (Lip Sync)":
+            button_label = "Generate 2D Cartoon Episode"
+        elif creation_mode == "Cinematic Image Story":
+            button_label = "Generate Cinematic Image Story"
+        else:
+            button_label = "Generate Professional Video"
         generate = st.button(button_label, type="primary", use_container_width=True)
 
     with right:
@@ -724,7 +778,7 @@ def render_app():
         progress = st.progress(0, text="Video build ho raha hai...")
 
         try:
-            if creation_mode == "Cinematic Cartoon Story":
+            if creation_mode in {"Cinematic Image Story", "2D Cartoon Episode (Lip Sync)"}:
                 import importlib
                 import api_fetcher
 
@@ -740,8 +794,12 @@ def render_app():
                     limit=min(90, max(topic_line_count, ideal_estimated_images) + 10),
                 )
                 st.info(f"{len(saved_images)} licensed scene images download ho gayi.")
-                progress.progress(38, text="Cartoon treatment aur cinematic camera motion render ho raha hai...")
-                final_duration, duration_was_shortened = create_cinematic_story(selected_duration)
+                if creation_mode == "2D Cartoon Episode (Lip Sync)":
+                    progress.progress(38, text="Characters, lip movement aur episode animation render ho rahi hai...")
+                    final_duration, duration_was_shortened = create_cartoon_episode(selected_duration)
+                else:
+                    progress.progress(38, text="Image treatment aur cinematic camera motion render ho raha hai...")
+                    final_duration, duration_was_shortened = create_cinematic_story(selected_duration)
             elif video_source == "Manual upload":
                 saved_videos = save_video_uploads(video_uploads)
                 st.info(f"{len(saved_videos)} manual video files save ho gaye.")
