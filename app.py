@@ -725,11 +725,14 @@ def render_app():
 
         try:
             if creation_mode == "Cinematic Cartoon Story":
-                from api_fetcher import ImageFetchError, fetch_and_download_images
+                import importlib
+                import api_fetcher
+
+                api_fetcher = importlib.reload(api_fetcher)
 
                 clear_old_images()
                 progress.progress(10, text="Licensed cinematic scene images search ho rahi hain...")
-                saved_images = fetch_and_download_images(
+                saved_images = api_fetcher.fetch_and_download_images(
                     topic=search_topic,
                     destination_dir=IMAGE_DIR,
                     pexels_api_key=get_secret("PEXELS_API_KEY"),
