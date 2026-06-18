@@ -7,6 +7,7 @@ import streamlit as st
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / "input"
 VIDEO_DIR = INPUT_DIR / "videos"
+IMAGE_DIR = INPUT_DIR / "images"
 AUDIO_FILE = INPUT_DIR / "audio.m4a"
 AUDIO_SOURCE_FILE = INPUT_DIR / "audio_source"
 TRANSCRIPT_FILE = INPUT_DIR / "transcript.txt"
@@ -15,6 +16,7 @@ OUTPUT_DIR = BASE_DIR / "output"
 FINAL_VIDEO = OUTPUT_DIR / "final_video.mp4"
 YOUTUBE_SHORTS = OUTPUT_DIR / "youtube_shorts.mp4"
 SUBTITLE_FILE = OUTPUT_DIR / "subtitles.srt"
+CREDITS_FILE = IMAGE_DIR / "credits.txt"
 
 TARGET_SECONDS = 10 * 60
 VIDEO_SIZE = (1920, 1080)
@@ -33,6 +35,9 @@ SUPPORTED_AUDIO_UPLOADS = ["mp3", "m4a", "aac", "wav", "ogg", "flac", "mp4", "mo
 AUTO_CLIP_LIMIT = 100
 MAX_CUT_SECONDS = 5
 MAX_ADAPTIVE_CUT_SECONDS = 16
+MAX_IMAGE_SCENE_SECONDS = 12
+IMAGE_SCENE_SECONDS = 7
+CREATION_MODES = ["Stock Video Documentary", "Cinematic Cartoon Story"]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
     "2-3 minutes": 180,
@@ -79,6 +84,7 @@ def save_uploaded_file(uploaded_file, destination):
 def ensure_folders():
     INPUT_DIR.mkdir(exist_ok=True)
     VIDEO_DIR.mkdir(exist_ok=True)
+    IMAGE_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
 
@@ -252,6 +258,164 @@ def create_video(target_seconds):
     return target_duration, duration_was_shortened
 
 
+def prepare_cartoon_scene(source, destination):
+    from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
+
+    with Image.open(source) as loaded:
+        canvas = ImageOps.fit(
+            loaded.convert("RGB"),
+            (1280, 720),
+            method=Image.Resampling.LANCZOS,
+        )
+
+    softened = canvas.filter(ImageFilter.MedianFilter(size=5))
+    posterized = ImageOps.posterize(softened, 5)
+    posterized = ImageEnhance.Color(posterized).enhance(1.18)
+    posterized = ImageEnhance.Contrast(posterized).enhance(1.08)
+
+    edges = ImageOps.grayscale(canvas).filter(ImageFilter.FIND_EDGES)
+    edges = edges.filter(ImageFilter.GaussianBlur(radius=0.7))
+    ink = ImageOps.invert(edges).point(lambda value: 255 if value > 205 else 105)
+    ink_rgb = Image.merge("RGB", (ink, ink, ink))
+    cartoon = ImageChops.multiply(posterized, ink_rgb)
+    cartoon.save(destination, "JPEG", quality=94, optimize=True)
+
+
+def create_cinematic_story(target_seconds):
+    import subprocess
+
+    import imageio_ffmpeg
+
+    ensure_folders()
+    validate_inputs()
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    image_paths = sorted(
+        path for path in IMAGE_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    if not image_paths:
+        raise FileNotFoundError("Cinematic story ke liye scene images nahi mili.")
+
+    requested_duration = min(float(target_seconds), TARGET_SECONDS)
+    audio_duration = media_duration(ffmpeg, AUDIO_FILE)
+    if audio_duration > 0:
+        requested_duration = min(requested_duration, audio_duration)
+
+    available_duration = len(image_paths) * MAX_IMAGE_SCENE_SECONDS
+    target_duration = min(requested_duration, available_duration)
+    if target_duration <= 0:
+        raise RuntimeError("Cinematic story duration prepare nahi ho paayi.")
+    duration_was_shortened = target_duration < requested_duration - 1
+    scene_seconds = min(MAX_IMAGE_SCENE_SECONDS, target_duration / len(image_paths))
+
+    temp_dir = OUTPUT_DIR / "cartoon_segments"
+    prepared_dir = temp_dir / "prepared"
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+    for old_file in temp_dir.glob("*.mp4"):
+        old_file.unlink()
+    for old_file in prepared_dir.glob("*.jpg"):
+        old_file.unlink()
+
+    segments = []
+    remaining = target_duration
+    for index, source in enumerate(image_paths):
+        if remaining <= 0.1:
+            break
+        duration = min(scene_seconds, remaining)
+        prepared = prepared_dir / f"scene_{index:03}.jpg"
+        prepare_cartoon_scene(source, prepared)
+
+        frame_count = max(1, int(round(duration * 24)))
+        motion = index % 4
+        if motion == 0:
+            zoom = "min(zoom+0.0010,1.14)"
+            x = "iw/2-(iw/zoom/2)"
+            y = "ih/2-(ih/zoom/2)"
+        elif motion == 1:
+            zoom = "1.10"
+            x = f"(iw-iw/zoom)*on/{max(1, frame_count - 1)}"
+            y = "ih/2-(ih/zoom/2)"
+        elif motion == 2:
+            zoom = "1.10"
+            x = f"(iw-iw/zoom)*(1-on/{max(1, frame_count - 1)})"
+            y = "ih/2-(ih/zoom/2)"
+        else:
+            zoom = "min(zoom+0.0008,1.12)"
+            x = "iw/2-(iw/zoom/2)"
+            y = f"(ih-ih/zoom)*on/{max(1, frame_count - 1)}"
+
+        vf = (
+            "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
+            f"zoompan=z='{zoom}':x='{x}':y='{y}':d={frame_count}:s=1280x720:fps=24,"
+            "eq=contrast=1.06:saturation=1.10:brightness=-0.01,vignette=PI/5,format=yuv420p"
+        )
+        output_segment = temp_dir / f"scene_{index:03}.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                str(prepared),
+                "-t",
+                f"{duration:.2f}",
+                "-vf",
+                vf,
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-pix_fmt",
+                "yuv420p",
+                str(output_segment),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        segments.append(output_segment)
+        remaining -= duration
+
+    if not segments:
+        raise RuntimeError("Cinematic scenes render nahi ho paaye.")
+
+    concat_file = temp_dir / "concat.txt"
+    concat_file.write_text(
+        "\n".join(f"file '{segment.as_posix()}'" for segment in segments),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-i",
+            str(AUDIO_FILE),
+            "-t",
+            f"{target_duration:.2f}",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(FINAL_VIDEO),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=420,
+    )
+    return target_duration, duration_was_shortened
+
+
 def extract_youtube_shorts():
     import subprocess
     import imageio_ffmpeg
@@ -303,6 +467,13 @@ def clear_old_videos():
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     for path in VIDEO_DIR.iterdir():
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            path.unlink()
+
+
+def clear_old_images():
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    for path in IMAGE_DIR.iterdir():
+        if path.is_file():
             path.unlink()
 
 
@@ -407,6 +578,15 @@ def show_existing_output():
                     mime="video/mp4",
                     use_container_width=True,
                 )
+        if CREDITS_FILE.exists():
+            with CREDITS_FILE.open("rb") as file:
+                st.download_button(
+                    "Download Image Credits",
+                    data=file,
+                    file_name="image_credits.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
     except Exception:
         st.warning("Previous output file load nahi ho paayi. Naya video generate karo.")
 
@@ -420,6 +600,11 @@ def render_app():
     left, right = st.columns([0.52, 0.48], gap="large")
 
     with left:
+        creation_mode = st.radio(
+            "Creation mode",
+            CREATION_MODES,
+            horizontal=True,
+        )
         topic = st.text_area(
             "Topic",
             height=96,
@@ -430,11 +615,13 @@ def render_app():
                 "4. hollywood studio"
             ),
         )
-        video_source = st.radio(
-            "Video source",
-            ["Auto fetch stock videos", "Manual upload"],
-            horizontal=True,
-        )
+        video_source = "Auto fetch stock videos"
+        if creation_mode == "Stock Video Documentary":
+            video_source = st.radio(
+                "Video source",
+                ["Auto fetch stock videos", "Manual upload"],
+                horizontal=True,
+            )
         duration_label = st.selectbox(
             "Output duration",
             list(OUTPUT_DURATION_OPTIONS.keys()),
@@ -444,23 +631,30 @@ def render_app():
         selected_duration = OUTPUT_DURATION_OPTIONS[duration_label]
         min_estimated_clips = max(1, int((selected_duration + MAX_ADAPTIVE_CUT_SECONDS - 1) // MAX_ADAPTIVE_CUT_SECONDS))
         ideal_estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
-        st.caption(
-            f"{duration_label} output ke liye approx {min_estimated_clips}-{ideal_estimated_clips} unique clips lagenge. "
-            "Har line alag search query ki tarah use hogi. Audio original speed par rahega."
-        )
+        ideal_estimated_images = max(1, int((selected_duration + IMAGE_SCENE_SECONDS - 1) // IMAGE_SCENE_SECONDS))
+        if creation_mode == "Cinematic Cartoon Story":
+            st.caption(
+                f"{duration_label} output ke liye approx {ideal_estimated_images} scene images fetch hongi. "
+                "Background story ke saath change hoga aur audio original speed par rahega."
+            )
+        else:
+            st.caption(
+                f"{duration_label} output ke liye approx {min_estimated_clips}-{ideal_estimated_clips} unique clips lagenge. "
+                "Har line alag search query ki tarah use hogi. Audio original speed par rahega."
+            )
         audio_upload = st.file_uploader(
             "NotebookLM Audio / Video Audio",
             type=SUPPORTED_AUDIO_UPLOADS,
             accept_multiple_files=False,
         )
         video_uploads = None
-        if video_source == "Manual upload":
+        if creation_mode == "Stock Video Documentary" and video_source == "Manual upload":
             video_uploads = st.file_uploader(
                 "Pexels Videos (MP4 files)",
                 type=["mp4", "mov", "mkv", "webm"],
                 accept_multiple_files=True,
             )
-        else:
+        elif creation_mode == "Stock Video Documentary":
             st.info("Auto mode free stock-video sources se clips fetch karega: Pexels, Pixabay, aur Coverr.")
             st.caption("App zyada clips download karega aur ek clip ko same video mein repeat nahi karega.")
             st.markdown(
@@ -468,13 +662,25 @@ def render_app():
                 "[Pixabay](https://pixabay.com/videos/) | "
                 "[Coverr](https://coverr.co/) free stock-video sources use honge."
             )
+        else:
+            st.info(
+                "Cinematic Cartoon Story mode transcript/topic ke scene ke hisaab se licensed images fetch karke "
+                "cartoon color treatment aur changing camera motion add karega."
+            )
+            st.markdown(
+                "[Pexels](https://www.pexels.com/) | "
+                "[Pixabay](https://pixabay.com/) | "
+                "[Wikimedia Commons](https://commons.wikimedia.org/) | "
+                "[Openverse](https://openverse.org/)"
+            )
         transcript_text = st.text_area(
             "Hindi Transcript / Subtitles (optional)",
             height=180,
             placeholder="Yahan Hindi transcript paste karo.",
         )
 
-        generate = st.button("Generate Professional Video", type="primary", use_container_width=True)
+        button_label = "Generate Cinematic Cartoon Story" if creation_mode == "Cinematic Cartoon Story" else "Generate Professional Video"
+        generate = st.button(button_label, type="primary", use_container_width=True)
 
     with right:
         st.subheader("Output")
@@ -489,7 +695,7 @@ def render_app():
         st.error("Pehle NotebookLM audio upload karo.")
         return
 
-    if video_source == "Manual upload" and not video_uploads:
+    if creation_mode == "Stock Video Documentary" and video_source == "Manual upload" and not video_uploads:
         st.error("Manual mode mein kam se kam 1 video file upload karo.")
         return
 
@@ -518,7 +724,22 @@ def render_app():
         progress = st.progress(0, text="Video build ho raha hai...")
 
         try:
-            if video_source == "Manual upload":
+            if creation_mode == "Cinematic Cartoon Story":
+                from api_fetcher import ImageFetchError, fetch_and_download_images
+
+                clear_old_images()
+                progress.progress(10, text="Licensed cinematic scene images search ho rahi hain...")
+                saved_images = fetch_and_download_images(
+                    topic=search_topic,
+                    destination_dir=IMAGE_DIR,
+                    pexels_api_key=get_secret("PEXELS_API_KEY"),
+                    pixabay_api_key=get_secret("PIXABAY_API_KEY"),
+                    limit=min(90, max(topic_line_count, ideal_estimated_images) + 10),
+                )
+                st.info(f"{len(saved_images)} licensed scene images download ho gayi.")
+                progress.progress(38, text="Cartoon treatment aur cinematic camera motion render ho raha hai...")
+                final_duration, duration_was_shortened = create_cinematic_story(selected_duration)
+            elif video_source == "Manual upload":
                 saved_videos = save_video_uploads(video_uploads)
                 st.info(f"{len(saved_videos)} manual video files save ho gaye.")
             else:
@@ -536,11 +757,12 @@ def render_app():
                 )
                 st.info(f"{len(saved_videos)} stock video clips download ho gaye.")
 
-            progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
-            final_duration, duration_was_shortened = create_video(selected_duration)
+            if creation_mode == "Stock Video Documentary":
+                progress.progress(35, text="Audio duration aur clips prepare ho rahe hain...")
+                final_duration, duration_was_shortened = create_video(selected_duration)
             if duration_was_shortened:
                 st.warning(
-                    "Selected duration se kam video bana kyunki unique usable clips kam mile. "
+                    "Selected duration se kam video bana kyunki unique usable scenes kam mile ya audio chhota tha. "
                     "App ne repeat kiye bina maximum possible duration banaya."
                 )
             st.info(
@@ -552,7 +774,7 @@ def render_app():
             st.session_state.video_generated = True
             progress.progress(100, text="Done")
         except Exception as exc:
-            if exc.__class__.__name__ == "VideoFetchError":
+            if exc.__class__.__name__ in {"VideoFetchError", "ImageFetchError"}:
                 st.error(str(exc))
                 return
             st.exception(exc)

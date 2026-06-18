@@ -1,4 +1,6 @@
 from pathlib import Path
+import hashlib
+import json
 import re
 from urllib.parse import quote_plus, urlparse
 
@@ -14,6 +16,9 @@ MAX_SEARCH_RESULTS_TO_COLLECT = 220
 MAX_QUERY_COUNT = 140
 MAX_TOPIC_WORDS = 8
 MIN_VALID_CLIP_SECONDS = 3.0
+DEFAULT_IMAGE_LIMIT = 70
+MIN_IMAGE_WIDTH = 1000
+MIN_IMAGE_HEIGHT = 560
 CINEMATIC_FALLBACK_QUERIES = [
     "cinematic movie scene dark dramatic",
     "film director movie set cinematic",
@@ -66,6 +71,10 @@ STOP_WORDS = {
 
 
 class VideoFetchError(RuntimeError):
+    pass
+
+
+class ImageFetchError(RuntimeError):
     pass
 
 
@@ -462,4 +471,311 @@ def fetch_and_download_videos(topic, destination_dir, pexels_api_key=None, pixab
     saved_paths = download_videos(videos, destination_dir)
     if not saved_paths:
         raise VideoFetchError("Real video clips download nahi hue. Image/static files skip kar diye gaye.")
+    return saved_paths
+
+
+def image_search_queries(topic):
+    direct_queries = topic_lines(topic)
+    if not direct_queries:
+        return []
+
+    queries = []
+    for query in direct_queries:
+        for candidate in (query, f"{query} cinematic", f"{query} dramatic background"):
+            if candidate not in queries:
+                queries.append(candidate)
+            if len(queries) >= MAX_QUERY_COUNT:
+                return queries
+    return queries
+
+
+def _pexels_image_url(photo):
+    sources = photo.get("src") or {}
+    return sources.get("large2x") or sources.get("landscape") or sources.get("large")
+
+
+def fetch_pexels_images(query, api_key, per_page=5, query_index=0):
+    if not api_key:
+        return []
+
+    url = (
+        f"https://api.pexels.com/v1/search?query={quote_plus(query)}"
+        f"&per_page={per_page}&orientation=landscape"
+    )
+    data = _request_json(url, headers={"Authorization": api_key})
+    results = []
+    for photo in data.get("photos", []):
+        image_url = _pexels_image_url(photo)
+        width = photo.get("width") or 0
+        height = photo.get("height") or 0
+        if image_url and is_landscape(width, height):
+            photographer = photo.get("photographer") or "Pexels contributor"
+            results.append(
+                {
+                    "source": "Pexels",
+                    "url": image_url,
+                    "page_url": photo.get("url") or image_url,
+                    "creator": photographer,
+                    "license": "Pexels License",
+                    "query": query,
+                    "query_index": query_index,
+                    "score": 30 + (20 if width >= 1920 else 10 if width >= 1280 else 0),
+                }
+            )
+    return results
+
+
+def fetch_pixabay_images(query, api_key, per_page=5, query_index=0):
+    if not api_key:
+        return []
+
+    url = (
+        f"https://pixabay.com/api/?key={api_key}&q={quote_plus(query)}"
+        f"&image_type=photo&orientation=horizontal&per_page={max(3, per_page)}"
+        "&order=popular&safesearch=true&min_width=1280"
+    )
+    data = _request_json(url)
+    results = []
+    for image in data.get("hits", []):
+        image_url = image.get("fullHDURL") or image.get("largeImageURL") or image.get("webformatURL")
+        width = image.get("imageWidth") or image.get("webformatWidth") or 0
+        height = image.get("imageHeight") or image.get("webformatHeight") or 0
+        if image_url and is_landscape(width, height):
+            results.append(
+                {
+                    "source": "Pixabay",
+                    "url": image_url,
+                    "page_url": image.get("pageURL") or image_url,
+                    "creator": image.get("user") or "Pixabay contributor",
+                    "license": "Pixabay Content License",
+                    "query": query,
+                    "query_index": query_index,
+                    "score": 25 + (20 if width >= 1920 else 10),
+                }
+            )
+    return results
+
+
+def fetch_wikimedia_images(query, per_page=5, query_index=0):
+    params = {
+        "action": "query",
+        "generator": "search",
+        "gsrsearch": f"filetype:bitmap {query}",
+        "gsrnamespace": 6,
+        "gsrlimit": max(3, min(10, per_page)),
+        "prop": "imageinfo",
+        "iiprop": "url|extmetadata|mime|size",
+        "iiurlwidth": 1920,
+        "format": "json",
+        "origin": "*",
+    }
+    response = requests.get(
+        "https://commons.wikimedia.org/w/api.php",
+        params=params,
+        headers={"User-Agent": "NotebookLMVideoBuilder/1.0"},
+        timeout=SEARCH_TIMEOUT,
+    )
+    response.raise_for_status()
+    pages = (response.json().get("query") or {}).get("pages") or {}
+    results = []
+    for page in pages.values():
+        info_items = page.get("imageinfo") or []
+        if not info_items:
+            continue
+        info = info_items[0]
+        mime = str(info.get("mime") or "")
+        width = info.get("width") or 0
+        height = info.get("height") or 0
+        image_url = info.get("thumburl") or info.get("url")
+        if not image_url or not mime.startswith("image/") or not is_landscape(width, height):
+            continue
+        metadata = info.get("extmetadata") or {}
+        creator = (metadata.get("Artist") or {}).get("value") or "Wikimedia Commons contributor"
+        creator = re.sub(r"<[^>]+>", "", creator).strip()
+        license_name = (metadata.get("LicenseShortName") or {}).get("value") or "Wikimedia Commons license"
+        results.append(
+            {
+                "source": "Wikimedia Commons",
+                "url": image_url,
+                "page_url": info.get("descriptionurl") or image_url,
+                "creator": creator,
+                "license": license_name,
+                "query": query,
+                "query_index": query_index,
+                "score": 20 + (20 if width >= 1920 else 5),
+            }
+        )
+    return results
+
+
+def fetch_openverse_images(query, per_page=5, query_index=0):
+    response = requests.get(
+        "https://api.openverse.org/v1/images/",
+        params={
+            "q": query,
+            "page_size": max(3, min(20, per_page)),
+            "license_type": "commercial",
+            "mature": "false",
+        },
+        headers={"User-Agent": "NotebookLMVideoBuilder/1.0"},
+        timeout=SEARCH_TIMEOUT,
+    )
+    response.raise_for_status()
+    results = []
+    for image in response.json().get("results", []):
+        image_url = image.get("url") or image.get("thumbnail")
+        width = image.get("width") or 0
+        height = image.get("height") or 0
+        if image_url and (not width or not height or is_landscape(width, height)):
+            results.append(
+                {
+                    "source": "Openverse",
+                    "url": image_url,
+                    "page_url": image.get("foreign_landing_url") or image_url,
+                    "creator": image.get("creator") or "Openverse contributor",
+                    "license": str(image.get("license") or "CC").upper(),
+                    "query": query,
+                    "query_index": query_index,
+                    "score": 15 + (20 if width >= 1920 else 5 if width >= 1280 else 0),
+                }
+            )
+    return results
+
+
+def search_stock_images(topic, pexels_api_key=None, pixabay_api_key=None, limit=DEFAULT_IMAGE_LIMIT):
+    queries = image_search_queries(topic)
+    if not queries:
+        raise ImageFetchError("Topic required hai.")
+
+    found = []
+    errors = []
+    direct_query_count = max(1, len(topic_lines(topic)))
+    per_query = 3 if direct_query_count <= 20 else 2
+
+    for query_index, query in enumerate(queries):
+        providers = []
+        if pexels_api_key:
+            providers.append(("Pexels", fetch_pexels_images, pexels_api_key))
+        if pixabay_api_key:
+            providers.append(("Pixabay", fetch_pixabay_images, pixabay_api_key))
+
+        for provider_name, provider, api_key in providers:
+            try:
+                found.extend(provider(query, api_key, per_page=per_query, query_index=query_index))
+            except Exception as exc:
+                errors.append(f"{provider_name}: {exc}")
+
+        if len(found) < limit:
+            try:
+                found.extend(fetch_wikimedia_images(query, per_page=per_query, query_index=query_index))
+            except Exception as exc:
+                errors.append(f"Wikimedia: {exc}")
+
+        if len(found) < limit:
+            try:
+                found.extend(fetch_openverse_images(query, per_page=per_query, query_index=query_index))
+            except Exception as exc:
+                errors.append(f"Openverse: {exc}")
+
+        if len(found) >= limit * 2:
+            break
+
+    unique = []
+    seen_urls = set()
+    for image in sorted(found, key=lambda item: (item.get("query_index", 9999), -item.get("score", 0))):
+        url = image.get("url")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        unique.append(image)
+        if len(unique) >= limit:
+            break
+
+    if not unique:
+        detail = "Relevant licensed images nahi mili."
+        if errors:
+            detail += " " + " | ".join(errors[:3])
+        raise ImageFetchError(detail)
+    return unique
+
+
+def download_images(images, destination_dir):
+    from PIL import Image
+
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    saved_paths = []
+    credits = []
+    seen_hashes = set()
+
+    for index, image in enumerate(images, start=1):
+        output_path = destination / f"scene_{index:03}.jpg"
+        try:
+            with requests.get(
+                image["url"],
+                stream=True,
+                headers={"User-Agent": "NotebookLMVideoBuilder/1.0"},
+                timeout=DOWNLOAD_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").lower()
+                if content_type and not content_type.startswith("image/"):
+                    continue
+                digest = hashlib.sha256()
+                with output_path.open("wb") as file:
+                    for chunk in response.iter_content(chunk_size=512 * 1024):
+                        if chunk:
+                            digest.update(chunk)
+                            file.write(chunk)
+
+            file_hash = digest.hexdigest()
+            if file_hash in seen_hashes:
+                output_path.unlink(missing_ok=True)
+                continue
+
+            with Image.open(output_path) as loaded:
+                loaded.load()
+                width, height = loaded.size
+                if width < MIN_IMAGE_WIDTH or height < MIN_IMAGE_HEIGHT or width < height:
+                    output_path.unlink(missing_ok=True)
+                    continue
+                loaded.convert("RGB").save(output_path, "JPEG", quality=92, optimize=True)
+
+            seen_hashes.add(file_hash)
+            saved_paths.append(output_path)
+            credits.append(
+                {
+                    "file": output_path.name,
+                    "source": image.get("source", "Unknown"),
+                    "creator": image.get("creator", "Unknown"),
+                    "license": image.get("license", "Check source"),
+                    "source_url": image.get("page_url") or image.get("url"),
+                    "query": image.get("query", ""),
+                }
+            )
+        except Exception:
+            output_path.unlink(missing_ok=True)
+
+    if credits:
+        (destination / "credits.json").write_text(json.dumps(credits, indent=2, ensure_ascii=False), encoding="utf-8")
+        lines = ["Cinematic Story image credits", ""]
+        for item in credits:
+            lines.append(
+                f"{item['file']} | {item['source']} | {item['creator']} | "
+                f"{item['license']} | {item['source_url']}"
+            )
+        (destination / "credits.txt").write_text("\n".join(lines), encoding="utf-8")
+    return saved_paths
+
+
+def fetch_and_download_images(topic, destination_dir, pexels_api_key=None, pixabay_api_key=None, limit=DEFAULT_IMAGE_LIMIT):
+    images = search_stock_images(
+        topic=topic,
+        pexels_api_key=pexels_api_key,
+        pixabay_api_key=pixabay_api_key,
+        limit=limit,
+    )
+    saved_paths = download_images(images, destination_dir)
+    if not saved_paths:
+        raise ImageFetchError("Licensed scene images download nahi ho paayi.")
     return saved_paths
