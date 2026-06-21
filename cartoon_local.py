@@ -121,9 +121,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     W, H, FPS, SZ, BLOCK = 1280, 720, 20, wf.SZ, 6.5
     work = Path(output_path).parent / "cartoon_work"; work.mkdir(parents=True, exist_ok=True)
     ND = str(work)
-    CART = (", 2D Hindi kahaniya cartoon animation style, thick bold BLACK outlines, flat cel-shaded colors, clean vector art, "
-            "the main character SHARPLY in focus in the foreground clearly separated from a simpler background, strong contrast, "
-            "character does NOT blend into the background, vibrant, NOT 3D, not painterly, not blurry, crisp, high quality")
+    CART = (", clean detailed classic Hindi kahaniya 2D cartoon, sharp bold clean black outlines, cel-shaded flat vibrant colors, "
+            "the main subject FULLY DETAILED, sharp, well-lit and clearly visible in the foreground, clearly separated from the "
+            "background, NOT blurry, no soft focus, no low-detail faces, does not merge into the background, "
+            "professional 2D animation, crisp, high detail")
 
     def run(a, **k): return subprocess.run(a, capture_output=True, **k)
     def runtext(a, **k):
@@ -185,8 +186,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
 
     # ---------- per-scene analysis (Pollinations-text) ----------
     EREC = {e["name"]: e for e in json.load(io.open(os.path.join(ASSETS, "anim_spec.json"), encoding="utf-8"))["result"]["emotions"]}
+    # story cutaways should DOMINATE; the talking-head host appears only for the intro + sparse
+    # transitions (and rarer as the episode gets longer, so it never feels like a repetitive anchor show).
     for i, bk in enumerate(blocks):
-        bk["kind"] = "host" if (i % 3 == 0) else "cut"
+        bk["kind"] = "cut"   # pure STORY visuals, NO talking-head anchor (per approved demo)
         bk["mus"] = _pick_music(bk["hi"])
         if bk["kind"] == "host":
             bk["host"] = gender(bk["a"], bk["b"]); bk["sfx"] = "studio"; bk["emo"] = "neutral"; bk["emoI"] = 0.5
@@ -279,12 +282,15 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         return im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
     CUT = {i: fit(os.path.join(ND, f"b{i}.jpg")) for i in cut_idx if have(i)}
     CAMS = ["push_in", "pull_out", "pan_left", "pan_right", "static_drift"]
-    def cam(img, p, mode):
+    def cam(img, p, mode, t=0.0):
         if mode == "push_in": z = 1.05 + 0.10 * p; ox = oy = 0.5
         elif mode == "pull_out": z = 1.15 - 0.10 * p; ox = oy = 0.5
         elif mode == "pan_left": z = 1.10; ox = 0.62 - 0.26 * p; oy = 0.5
         elif mode == "pan_right": z = 1.10; ox = 0.38 + 0.26 * p; oy = 0.5
-        else: z = 1.07 + 0.02 * math.sin(p * math.pi); ox = 0.5 + 0.02 * math.sin(p * 2); oy = 0.5
+        else: z = 1.07; ox = 0.5; oy = 0.5
+        z += 0.010 * math.sin(t * 2 * math.pi * 0.28)                              # subtle breathing -> alive feel
+        ox = min(1, max(0, ox + 0.006 * math.sin(t * 2 * math.pi * 0.19)))         # gentle sway
+        oy = min(1, max(0, oy + 0.010 * math.sin(t * 2 * math.pi * 0.22)))
         cw, ch = int(W / z), int(H / z); px = int((img.width - cw) * ox); py = int((img.height - ch) * oy)
         px = max(0, min(img.width - cw, px)); py = max(0, min(img.height - ch, py))
         return img.crop((px, py, px + cw, py + ch)).resize((W, H), Image.LANCZOS)
@@ -313,7 +319,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
             face = Image.fromarray(cv2.cvtColor(w768, cv2.COLOR_BGR2RGB)).resize((720, 720), Image.LANCZOS)
             dy = int(round(2.2 * math.sin(tt * 2.0) + 1.0 * o_sm[f])); cv_ = STUDIO.copy(); cv_.paste(face, (XOFF, dy), MASK[hid]); fr = cv_
         else:
-            img = CUT.get(k) or (next(iter(CUT.values())) if CUT else Image.new("RGB", (W, H), (20, 20, 30))); fr = cam(img, p, CAMS[(k * 7 + 2) % 5])
+            img = CUT.get(k) or (next(iter(CUT.values())) if CUT else Image.new("RGB", (W, H), (20, 20, 30))); fr = cam(img, p, CAMS[(k * 7 + 2) % 5], tt)
         a = np.asarray(fr.convert("RGB")).astype(np.float32) * vig; fr = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).convert("RGBA"); brand(fr)
         lf = f - int(bk["a"] * FPS)
         if k > 0 and lf < XF and prev is not None: fr = Image.blend(prev, fr, lf / XF)
