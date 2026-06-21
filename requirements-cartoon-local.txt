@@ -1,3 +1,6 @@
+# Heavy LOCAL dependencies for the "2D Cartoon Episode (Lip Sync)" mode (GPU recommended).
+# DO NOT merge these into the Streamlit Cloud requirements.txt — the public cloud app stays lightweight.
+# Install locally:  pip install -r requirements-cartoon-local.txt
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.11.0+cu128
 torchvision==0.26.0+cu128
@@ -9,3 +12,14 @@ sentencepiece>=0.2
 protobuf>=5
 Pillow>=10.4
 imageio-ffmpeg>=0.5.1
+
+# --- 2D Cartoon Episode (Lip Sync) pipeline: transcribe + face-warp lip-sync + cutout + audio ---
+faster-whisper>=1.0
+rembg>=2.0
+onnxruntime>=1.17
+opencv-python>=4.9
+scipy>=1.11
+librosa>=0.10
+soundfile>=0.12
+numpy>=1.26
+requests>=2.31

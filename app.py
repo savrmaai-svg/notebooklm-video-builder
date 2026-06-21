@@ -58,21 +58,39 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] {
-        width: 100%;
-        max-width: 100%;
-        margin-bottom: 0.55rem;
+    .stApp { background: radial-gradient(1100px 560px at 18% -12%, #1b2440 0%, #0e1117 58%); }
+    .block-container { padding-top: 2.0rem; max-width: 1180px; }
+    h1 {
+        font-weight: 800; letter-spacing: -0.6px; font-size: 2.5rem;
+        background: linear-gradient(90deg, #a78bfa 0%, #38bdf8 60%, #22d3ee 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     }
-
-    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] > div {
-        width: 100%;
-        max-width: 100%;
+    h2, h3 { font-weight: 700; }
+    div[data-testid="stRadio"] > div { gap: 6px; flex-wrap: wrap; }
+    div[data-testid="stRadio"] label {
+        background: #171c2e; border: 1px solid #2a3350; border-radius: 12px;
+        padding: 7px 14px; transition: all .15s ease;
     }
-
-    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] div {
-        white-space: normal;
-        overflow-wrap: anywhere;
+    div[data-testid="stRadio"] label:hover { border-color: #6d5cff; }
+    div.stButton > button[kind="primary"] {
+        background: linear-gradient(90deg, #7c5cff 0%, #22d3ee 100%);
+        border: none; border-radius: 12px; font-weight: 700; padding: 0.72rem;
+        box-shadow: 0 6px 22px rgba(124, 92, 255, .35);
     }
+    div.stButton > button[kind="primary"]:hover { filter: brightness(1.08); transform: translateY(-1px); }
+    .stTextArea textarea, .stSelectbox div[data-baseweb="select"] {
+        border-radius: 10px; border: 1px solid #2a3350; background: #131829;
+    }
+    [data-testid="stFileUploader"] section {
+        border: 1.5px dashed #3a4570; border-radius: 12px; background: #141a2c;
+    }
+    .nlm-badge {
+        display:inline-block; padding:3px 12px; border-radius:999px; font-size:0.8rem; font-weight:600;
+        background:linear-gradient(90deg,#7c5cff33,#22d3ee33); border:1px solid #3a4570; color:#cbd5ff;
+    }
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] { width: 100%; max-width: 100%; margin-bottom: 0.55rem; }
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] > div { width: 100%; max-width: 100%; }
+    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"] div { white-space: normal; overflow-wrap: anywhere; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -420,38 +438,32 @@ def create_cinematic_story(target_seconds):
     return target_duration, duration_was_shortened
 
 
-def create_cartoon_episode(target_seconds):
+def create_cartoon_episode(target_seconds, topic="", transcript="", progress_cb=None):
+    # New self-contained local pipeline: transcribe -> scene-aware backgrounds + recurring host
+    # narrators with face-warp viseme lip-sync + scene ambient sound. Generates its own art
+    # (no stock photos). Requires the local cartoon dependencies (see requirements-cartoon-local.txt).
     import imageio_ffmpeg
-
-    from cartoon_engine import BACKGROUND_SECONDS, render_cartoon_episode
+    import cartoon_local
 
     ensure_folders()
     validate_inputs()
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    image_paths = sorted(
-        path for path in IMAGE_DIR.iterdir()
-        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-    )
-    if not image_paths:
-        raise FileNotFoundError("Cartoon episode ke liye scene backgrounds nahi mile.")
-
     requested_duration = min(float(target_seconds), TARGET_SECONDS)
     audio_duration = media_duration(ffmpeg, AUDIO_FILE)
     if audio_duration > 0:
         requested_duration = min(requested_duration, audio_duration)
-    available_unique_duration = len(image_paths) * BACKGROUND_SECONDS
-    target_duration = min(requested_duration, available_unique_duration)
-    if target_duration <= 0:
+    if requested_duration <= 0:
         raise RuntimeError("Cartoon episode duration prepare nahi ho paayi.")
 
-    render_cartoon_episode(
-        ffmpeg=ffmpeg,
+    final_duration = cartoon_local.render(
         audio_path=AUDIO_FILE,
-        background_paths=image_paths,
         output_path=FINAL_VIDEO,
-        duration=target_duration,
+        target_seconds=requested_duration,
+        topic=topic,
+        transcript=transcript,
+        progress=progress_cb,
     )
-    return target_duration, target_duration < requested_duration - 1
+    return final_duration, final_duration < requested_duration - 1
 
 
 def extract_youtube_shorts():
@@ -632,8 +644,12 @@ def show_existing_output():
 def render_app():
     ensure_folders()
 
-    st.title("NotebookLM Video Builder")
-    st.caption("Topic aur audio do. App relevant copyright-free stock video clips automatically fetch karke synced video generate karega.")
+    st.title("🎬 NotebookLM Video Builder")
+    st.markdown(
+        '<span class="nlm-badge">Stock Documentary · Cinematic Story · 2D Cartoon Lip-Sync</span>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Audio upload karo — app use samajh kar matching visuals, Hindi captions aur scene-aware sound ke saath video bana deta hai.")
 
     left, right = st.columns([0.52, 0.48], gap="large")
 
@@ -670,7 +686,12 @@ def render_app():
         min_estimated_clips = max(1, int((selected_duration + MAX_ADAPTIVE_CUT_SECONDS - 1) // MAX_ADAPTIVE_CUT_SECONDS))
         ideal_estimated_clips = max(1, int((selected_duration + MAX_CUT_SECONDS - 1) // MAX_CUT_SECONDS))
         ideal_estimated_images = max(1, int((selected_duration + IMAGE_SCENE_SECONDS - 1) // IMAGE_SCENE_SECONDS))
-        if creation_mode in {"Cinematic Image Story", "2D Cartoon Episode (Lip Sync)"}:
+        if creation_mode == "2D Cartoon Episode (Lip Sync)":
+            st.caption(
+                f"{duration_label} tak ka cartoon episode banega. Har scene ka background, character, "
+                "lip-sync aur ambient sound app khud generate karega. Audio original speed par rahega."
+            )
+        elif creation_mode == "Cinematic Image Story":
             st.caption(
                 f"{duration_label} output ke liye approx {ideal_estimated_images} scene images fetch hongi. "
                 "Background story ke saath change hoga aur audio original speed par rahega."
@@ -713,14 +734,13 @@ def render_app():
             )
         else:
             st.info(
-                "2D Cartoon Episode mode fixed original cartoon characters, audio-reactive mouth movement, "
-                "blinking, body motion aur story-wise changing backgrounds render karega."
+                "2D Cartoon Episode mode: app audio ko transcribe karke har scene ka background khud generate karta hai "
+                "(story ke hisaab se — gaon, market, ghar, workshop...), recurring cartoon host narrator ka face-warp lip-sync "
+                "karta hai, aur har scene ka apna ambient sound + mood music lagata hai."
             )
-            st.markdown(
-                "[Pexels](https://www.pexels.com/) | "
-                "[Pixabay](https://pixabay.com/) | "
-                "[Wikimedia Commons](https://commons.wikimedia.org/) | "
-                "[Openverse](https://openverse.org/)"
+            st.caption(
+                "⚙️ Local GPU mode — ye features aapke PC par chalte hain (public cloud par nahi). "
+                "Pehli baar whisper model download hoga."
             )
         transcript_text = st.text_area(
             "Hindi Transcript / Subtitles (optional)",
@@ -756,7 +776,7 @@ def render_app():
     search_topic = build_auto_topic(topic, transcript_text)
     topic_line_count = count_topic_lines(search_topic)
 
-    if video_source == "Auto fetch stock videos" and not search_topic:
+    if creation_mode == "Stock Video Documentary" and video_source == "Auto fetch stock videos" and not search_topic:
         st.error("Auto mode ke liye topic enter karo ya transcript paste karo.")
         return
 
@@ -778,7 +798,16 @@ def render_app():
         progress = st.progress(0, text="Video build ho raha hai...")
 
         try:
-            if creation_mode in {"Cinematic Image Story", "2D Cartoon Episode (Lip Sync)"}:
+            if creation_mode == "2D Cartoon Episode (Lip Sync)":
+                def _cartoon_progress(pct, text):
+                    progress.progress(min(99, max(1, int(pct))), text=text)
+                final_duration, duration_was_shortened = create_cartoon_episode(
+                    selected_duration,
+                    topic=search_topic,
+                    transcript=transcript_text,
+                    progress_cb=_cartoon_progress,
+                )
+            elif creation_mode == "Cinematic Image Story":
                 import importlib
                 import api_fetcher
 
@@ -794,12 +823,8 @@ def render_app():
                     limit=min(90, max(topic_line_count, ideal_estimated_images) + 10),
                 )
                 st.info(f"{len(saved_images)} licensed scene images download ho gayi.")
-                if creation_mode == "2D Cartoon Episode (Lip Sync)":
-                    progress.progress(38, text="Characters, lip movement aur episode animation render ho rahi hai...")
-                    final_duration, duration_was_shortened = create_cartoon_episode(selected_duration)
-                else:
-                    progress.progress(38, text="Image treatment aur cinematic camera motion render ho raha hai...")
-                    final_duration, duration_was_shortened = create_cinematic_story(selected_duration)
+                progress.progress(38, text="Image treatment aur cinematic camera motion render ho raha hai...")
+                final_duration, duration_was_shortened = create_cinematic_story(selected_duration)
             elif video_source == "Manual upload":
                 saved_videos = save_video_uploads(video_uploads)
                 st.info(f"{len(saved_videos)} manual video files save ho gaye.")

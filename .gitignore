@@ -14,3 +14,17 @@ final_videoTEMP*
 *TEMP_MPY*
 
 .streamlit/secrets.toml
+
+# --- local experiment scripts + generated prototype output (NOT part of the deployable app) ---
+_*.py
+proto_*.py
+kargil_*.py
+transcribe_*.py
+cartoon_demo.py
+cartoon_4min.py
+cartoon_episode.py
+cartoon_lipsync_test.py
+warp_talk6.py
+prototype_assets/
+*.m4a
+*.wav

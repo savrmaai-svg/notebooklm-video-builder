@@ -1,0 +1,132 @@
+{
+  "summary": "Design phoneme-viseme + emotion expression system and per-scene emotion timeline for the cartoon hosts (face-warp rig)",
+  "agentCount": 7,
+  "logs": [],
+  "result": {
+    "emotions": [
+      {
+        "name": "neutral",
+        "desc": "Resting anchor face: brows level, eyes alert and soft, mouth relaxed and straight, no pull anywhere.",
+        "brow_dy": 0,
+        "brow_in_dx": 0,
+        "lid_dy": 0,
+        "cheek_dy": 0,
+        "corner_dx": 0,
+        "corner_dy": 0
+      },
+      {
+        "name": "happy",
+        "desc": "Warm full smile: cheeks lift, mouth corners pull up and outward, eyes squint slightly from the cheek raise, brows ease up.",
+        "brow_dy": -0.004,
+        "brow_in_dx": 0,
+        "lid_dy": 0,
+        "cheek_dy": -0.012,
+        "corner_dx": 0.008,
+        "corner_dy": -0.014
+      },
+      {
+        "name": "hopeful",
+        "desc": "Earnest optimism: inner brows lift gently, eyes open alert-but-soft, cheeks and mouth corners rise into a small warm smile.",
+        "brow_dy": -0.006,
+        "brow_in_dx": -0.002,
+        "lid_dy": -0.005,
+        "cheek_dy": -0.006,
+        "corner_dx": 0.004,
+        "corner_dy": -0.008
+      },
+      {
+        "name": "calm",
+        "desc": "Settled composure: brows at rest, lids slightly lowered and steady, faint upward ease at the mouth, no tension.",
+        "brow_dy": -0.002,
+        "brow_in_dx": 0,
+        "lid_dy": 0.004,
+        "cheek_dy": -0.002,
+        "corner_dx": 0,
+        "corner_dy": -0.003
+      },
+      {
+        "name": "uneasy",
+        "desc": "Quiet dread: inner brows draw up and slightly together, lids lower and narrow a touch, mouth neutral to faintly downturned, no smile.",
+        "brow_dy": -0.005,
+        "brow_in_dx": 0.003,
+        "lid_dy": 0.004,
+        "cheek_dy": 0,
+        "corner_dx": -0.002,
+        "corner_dy": 0.003
+      },
+      {
+        "name": "tense",
+        "desc": "Held conviction under pressure: brows level-to-drawn inward, lids steady and slightly tightened, lips lightly pressed, corners neutral.",
+        "brow_dy": 0.002,
+        "brow_in_dx": 0.004,
+        "lid_dy": -0.002,
+        "cheek_dy": 0.002,
+        "corner_dx": -0.003,
+        "corner_dy": 0
+      },
+      {
+        "name": "sad",
+        "desc": "Downcast sorrow: inner brows pull up and together, upper lids droop, cheeks slack, mouth corners pull down.",
+        "brow_dy": -0.006,
+        "brow_in_dx": 0.005,
+        "lid_dy": 0.006,
+        "cheek_dy": 0.004,
+        "corner_dx": -0.003,
+        "corner_dy": 0.01
+      },
+      {
+        "name": "angry",
+        "desc": "Hardened displeasure: brows lower strongly and pull inward, lids tighten over narrowed eyes, mouth corners press down, jaw set.",
+        "brow_dy": 0.011,
+        "brow_in_dx": 0.006,
+        "lid_dy": 0.002,
+        "cheek_dy": -0.002,
+        "corner_dx": -0.004,
+        "corner_dy": 0.006
+      },
+      {
+        "name": "surprise",
+        "desc": "Quick alert opening: brows shoot up, eyes widen, mouth corners pull back and down as the jaw drops open.",
+        "brow_dy": -0.014,
+        "brow_in_dx": 0,
+        "lid_dy": -0.012,
+        "cheek_dy": -0.004,
+        "corner_dx": 0.002,
+        "corner_dy": 0.004
+      },
+      {
+        "name": "emphatic",
+        "desc": "High-conviction stress: inner brows raised and held, lids momentarily widen on the beat, lower face tightens with one assertive corner pull, no warmth.",
+        "brow_dy": -0.008,
+        "brow_in_dx": -0.003,
+        "lid_dy": -0.006,
+        "cheek_dy": 0.002,
+        "corner_dx": -0.004,
+        "corner_dy": 0
+      }
+    ],
+    "scene_emotion": [
+      {
+        "i": 1,
+        "emotion": "hopeful",
+        "intensity": 0.6,
+        "head": "Slow gentle nod settling into a slight lean-in toward camera on 'शांति शिखर वार्ता', with a barely-there tilt for a trustworthy-anchor read rather than stiff.",
+        "note": "Male host opens with measured warm optimism for the peace-summit lead. Start calm/composed (inner brows up brow_dy -0.006 with slight brow_in_dx -0.002, lids open soft lid_dy -0.005, gentle smile corner_dy -0.008, cheeks lift cheek_dy -0.006); on key word 'शांति' raise brows a touch more and warm the smile to peak, then ease back to a steady hopeful rest on 'वार्ता' so optimism crests then resolves into composed anticipation."
+      },
+      {
+        "i": 3,
+        "emotion": "uneasy",
+        "intensity": 0.45,
+        "head": "Slow settled near-stillness on the first half with a gentle slow nod as if reassured, then a slight head tilt and small lean-in on 'पर सैकड़ों मील दूर' to pull the viewer into the secret.",
+        "note": "Calm laced with dread, not contentment. Open genuinely calm/soft through 'चैन की सांस ले रही थी' (lids settled lid_dy ~+0.004, mouth neutral-to-faint downturn corner_dy ~+0.003, brows level). On pivot word 'पर' shift to unease: inner brows lift and draw together (brow_dy ~-0.005 with brow_in_dx ~+0.003) and lids narrow a touch — the micro relief-to-dread turn that sells the line. Anchored on restrained unease rather than calm."
+      },
+      {
+        "i": 7,
+        "emotion": "emphatic",
+        "intensity": 0.8,
+        "head": "Slow controlled lean-in on 'सबसे बड़ा विरोधाभास', settling into a single firm deliberate nod landing on 'यही कहूँगी', with a very slight chin-lift on the final clause for knowing down-the-nose authority.",
+        "note": "Tense, knowing reveal with a self-assertive punch — high-conviction emphatic with a tense undercurrent, no smile, corners neutral-to-pressed. Start measured/tense (brows level-to-drawn, inner brows raised inward brow_in_dx ~-0.003, lids steady, lips lightly pressed corner_dx ~-0.004). On 'विरोधाभास' sharpen with a quick inner-brow raise (brow_dy ~-0.008) plus micro lid-widen (lid_dy ~-0.006) for the knowing beat; on 'मैं तो यही कहूँगी' pull emphasis into the lower face with one assertive corner tightening and the single nod, brows held high so the host ends locked-in and certain rather than relaxing to neutral."
+      }
+    ]
+  }
+}
