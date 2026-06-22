@@ -101,7 +101,7 @@ def _pick_music(hi):
     return "soft_emotional"
 
 
-def render(audio_path, output_path, target_seconds=120, topic="", transcript="", progress=None):
+def render(audio_path, output_path, target_seconds=120, topic="", transcript="", progress=None, start_offset=0.0):
     def prog(p, t):
         if progress:
             try: progress(int(p), t)
@@ -138,7 +138,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
 
     # ---------- transcribe ----------
     prog(8, "Audio transcribe ho raha hai (whisper)...")
-    pcm = run([FF, "-y", "-t", str(TOTAL), "-i", audio_path, "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-"]).stdout
+    pcm = run([FF, "-y", "-ss", str(start_offset), "-t", str(TOTAL), "-i", audio_path, "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-"]).stdout
     audio16 = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
     from faster_whisper import WhisperModel
     try:
@@ -155,7 +155,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     def text_in(a, b): return " ".join(s["text"] for s in segs if s["end"] > a and s["start"] < b).strip()
     blocks = []; t = 0.0
     while t < TOTAL - 0.4:
-        e = min(t + BLOCK, TOTAL); blocks.append({"a": t, "b": e, "hi": text_in(t, e)}); t = e
+        e = min(t + BLOCK, TOTAL); blocks.append({"i": len(blocks), "a": t, "b": e, "hi": text_in(t, e)}); t = e
     TOTAL = blocks[-1]["b"]; NB = len(blocks); NF = int(TOTAL * FPS)
 
     # ---------- character bible (consistency without agents) ----------
@@ -167,8 +167,8 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
 
     # ---------- narration audio + envelope + pitch ----------
     NARR = os.path.join(ND, "narr.m4a"); WAVA = os.path.join(ND, "narr.wav")
-    run([FF, "-y", "-t", str(TOTAL), "-i", audio_path, "-c:a", "aac", "-b:a", "160k", NARR])
-    run([FF, "-y", "-t", str(TOTAL), "-i", audio_path, "-ar", "22050", "-ac", "1", WAVA])
+    run([FF, "-y", "-ss", str(start_offset), "-t", str(TOTAL), "-i", audio_path, "-c:a", "aac", "-b:a", "160k", NARR])
+    run([FF, "-y", "-ss", str(start_offset), "-t", str(TOTAL), "-i", audio_path, "-ar", "22050", "-ac", "1", WAVA])
     y, sr = sf.read(WAVA); y = y.astype(np.float32); hop = int(sr / FPS)
     rms = librosa.feature.rms(y=y, frame_length=hop * 2, hop_length=hop)[0]
     env = np.clip(rms / (np.percentile(rms, 95) + 1e-6), 0, 1.3); env = np.convolve(env, [0.25, 0.5, 0.25], mode="same")
@@ -200,11 +200,16 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        '{"environment":"<specific setting e.g. village-workshop/market/city-street/school/home/temple>",'
                        '"prompt":"<one clean English FLAT 2D cartoon scene depicting the line; the main character sharp in the '
                        'foreground with bold black outlines, well-proportioned, not merging with a simpler background, no text>",'
-                       '"emotion":"<neutral/happy/sad/tense/hopeful/surprise>"}. '
+                       '"emotion":"<neutral/happy/sad/tense/hopeful/surprise>",'
+                       '"char_voice":"<none | child | elderly_female | elderly_male | adult_male | adult_female>",'
+                       '"char_line":"<if the line clearly is a STORY CHARACTER (a child/old woman/man) speaking, write the SHORT Hindi sentence they say; otherwise empty>"}. '
+                       'Set char_voice to a person ONLY when the narration is clearly that character speaking dialogue; for plain narration use "none" and empty char_line. '
                        f'Narration line: {bk["hi"]}')
             bk["env"] = j.get("environment", "home")
             bk["prompt"] = (j.get("prompt") or ("a flat 2D cartoon scene of " + bk["hi"][:60])) + CART
             bk["sfx"] = env_ambient(bk["env"]); bk["emo"] = j.get("emotion", "neutral"); bk["emoI"] = 0.6
+            cv = (j.get("char_voice") or "none").strip(); cl = (j.get("char_line") or "").strip()
+            bk["cvoice"] = cv if (cv != "none" and len(cl) >= 3) else "none"; bk["cline"] = cl if bk["cvoice"] != "none" else ""
 
     # ---------- cutaway images ----------
     cut_idx = [i for i, bk in enumerate(blocks) if bk["kind"] == "cut"]
@@ -387,17 +392,56 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     runtext([FF, "-y", "-i", "_sil.mp4", "-vf", "subtitles=cap.ass:fontsdir=.", "-c:v", "libx264", "-pix_fmt", "yuv420p", "capped.mp4"], cwd=ND)
     vid = CAPV if (os.path.exists(CAPV) and os.path.getsize(CAPV) > 10000) else SIL
 
+    # ---------- VOICE-HYBRID: at character-dialogue scenes, swap the host narration for the character's
+    #            own TTS voice (child / elderly woman / man) for that window; elsewhere keep the NLM audio ----------
+    NARR_USE = NARR
+    char_scenes = [b for b in blocks if b.get("cvoice", "none") != "none"]
+    if char_scenes:
+        prog(90, f"{len(char_scenes)} character voice(s) add ho rahi hain...")
+        try:
+            import asyncio, edge_tts
+            VMAP = {"child": ("hi-IN-SwaraNeural", "+18Hz", "+10%"), "adult_female": ("hi-IN-SwaraNeural", "+0Hz", "+0%"),
+                    "elderly_female": ("hi-IN-SwaraNeural", "-12Hz", "-10%"), "adult_male": ("hi-IN-MadhurNeural", "-2Hz", "-2%"),
+                    "elderly_male": ("hi-IN-MadhurNeural", "-10Hz", "-8%")}
+            async def _mktts():
+                for bk in char_scenes:
+                    v, pit, rat = VMAP.get(bk["cvoice"], VMAP["adult_male"])
+                    fp = os.path.join(ND, f"_cv{bk['i']}.mp3")
+                    try: await edge_tts.Communicate(bk["cline"], v, pitch=pit, rate=rat).save(fp); bk["_tts"] = fp
+                    except Exception: bk["_tts"] = None
+            asyncio.run(_mktts())
+            NARR_WAV = os.path.join(ND, "_narr_full.wav")    # PCM source -> sample-accurate slicing (no drift)
+            run([FF, "-y", "-i", NARR, "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", NARR_WAV])
+            parts = []
+            for bk in blocks:
+                d = max(0.2, bk["b"] - bk["a"]); seg = os.path.join(ND, f"_na{bk['i']}.wav"); tts = bk.get("_tts")
+                if bk.get("cvoice", "none") != "none" and tts and os.path.exists(tts):    # character window -> their voice
+                    run([FF, "-y", "-i", tts, "-af", f"aresample=44100,apad,atrim=0:{d:.3f},asetpts=PTS-STARTPTS", "-ac", "2", "-c:a", "pcm_s16le", "-t", f"{d:.3f}", seg])
+                else:                                                                       # otherwise keep the NLM slice (PCM, exact)
+                    run([FF, "-y", "-ss", f"{bk['a']:.3f}", "-t", f"{d:.3f}", "-i", NARR_WAV, "-ac", "2", "-c:a", "pcm_s16le", seg])
+                parts.append(seg)
+            if all(os.path.exists(p) and os.path.getsize(p) > 800 for p in parts):
+                cmd = [FF, "-y"]
+                for p in parts: cmd += ["-i", p]
+                cmd += ["-filter_complex", "".join(f"[{i}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[o]",
+                        "-map", "[o]", "-ar", "44100", "-ac", "2", "-c:a", "aac", "-b:a", "160k", os.path.join(ND, "narr_final.m4a")]
+                run(cmd)
+                NF2 = os.path.join(ND, "narr_final.m4a")
+                if os.path.exists(NF2) and os.path.getsize(NF2) > 5000: NARR_USE = NF2
+        except Exception:
+            NARR_USE = NARR     # voice-hybrid is best-effort; on any failure keep the original NLM narration
+
     # ---------- mux (adaptive: full scene-aware mix, or narration-only if a track is missing) ----------
     prog(94, "Final video taiyaar ho raha hai...")
     if ok_sfx and ok_mus:
-        runtext([FF, "-y", "-i", vid, "-i", NARR, "-i", SFXF, "-i", MUSF, "-filter_complex",
+        runtext([FF, "-y", "-i", vid, "-i", NARR_USE,"-i", SFXF, "-i", MUSF, "-filter_complex",
            "[1:a]volume=1.55,asplit=3[vmain][vk1][vk2];"
            "[2:a]volume=0.5[sfx];[sfx][vk1]sidechaincompress=threshold=0.05:ratio=8:attack=15:release=350[sfxd];"
            "[3:a]volume=0.34[mus];[mus][vk2]sidechaincompress=threshold=0.06:ratio=5:attack=20:release=400[musd];"
            "[vmain][sfxd][musd]amix=inputs=3:normalize=0:duration=first[mx];[mx]alimiter=limit=0.95[ao]",
            "-map", "0:v", "-map", "[ao]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path])
     else:
-        runtext([FF, "-y", "-i", vid, "-i", NARR, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path])
+        runtext([FF, "-y", "-i", vid, "-i", NARR_USE,"-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path])
     if not (os.path.exists(output_path) and os.path.getsize(output_path) > 50000):
         raise RuntimeError("Final cartoon video mux nahi ho paaya.")
     prog(100, "Done")
