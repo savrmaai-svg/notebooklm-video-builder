@@ -121,10 +121,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     W, H, FPS, SZ, BLOCK = 1280, 720, 20, wf.SZ, 6.5
     work = Path(output_path).parent / "cartoon_work"; work.mkdir(parents=True, exist_ok=True)
     ND = str(work)
-    CART = (", clean detailed classic Hindi kahaniya 2D cartoon, sharp bold clean black outlines, cel-shaded flat vibrant colors, "
-            "the main subject FULLY DETAILED, sharp, well-lit and clearly visible in the foreground, clearly separated from the "
-            "background, NOT blurry, no soft focus, no low-detail faces, does not merge into the background, "
-            "professional 2D animation, crisp, high detail")
+    EPISODE_SEED = 4242   # ONE fixed seed for the whole episode -> consistent style + character look across every scene
+    CART = (", clean classic Indian kahaniya 2D cartoon, flat cel-shaded vibrant colors, bold even black outlines, "
+            "simple flat storybook background, ONE clear well-lit main character in the foreground with a large expressive face, "
+            "the SAME consistent character design every scene, sharp and clearly separated from the background, NOT blurry, "
+            "no soft focus, no sketch lines, no crosshatch, no pencil shading, no text, no watermark, no caption, "
+            "professional 2D animation, high detail")
 
     def run(a, **k): return subprocess.run(a, capture_output=True, **k)
     def runtext(a, **k):
@@ -150,6 +152,18 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     segs = [{"start": float(s.start), "end": float(s.end), "text": s.text.strip()} for s in segs_it]
     if not segs:
         raise RuntimeError("Audio se koi speech transcribe nahi hui.")
+    # ---------- skip the NotebookLM host intro -> start at the real story narration ----------
+    if len(segs) >= 4:
+        seg_list = " ".join(f"[{int(s['start'])}s] {s['text']}" for s in segs[:18])[:1500]
+        _ans = _ptext("This Hindi transcript has [seconds] tags and often begins with 1-2 hosts introducing / discussing "
+                      "the topic before the real STORY narration starts. Reply with ONLY the integer second at which the "
+                      "actual story narration begins (0 if it starts right away). Transcript: " + seg_list)
+        _m = re.search(r"\d+", _ans or "")
+        _S0 = float(_m.group(0)) if _m else 0.0
+        if 3.0 <= _S0 < (segs[-1]["end"] - 8):
+            segs = [{"start": s["start"] - _S0, "end": s["end"] - _S0, "text": s["text"]} for s in segs if s["end"] > _S0 + 0.2]
+            start_offset = float(start_offset) + _S0
+            prog(13, f"NotebookLM intro skip (~{int(_S0)}s) -- seedha kahani se shuru")
     TOTAL = min(TOTAL, segs[-1]["end"])
 
     def text_in(a, b): return " ".join(s["text"] for s in segs if s["end"] > a and s["start"] < b).strip()
@@ -164,6 +178,8 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     bible = _ptext("From this Hindi story transcript, name the 1-3 MAIN recurring characters and give each a short, "
                    "fixed visual description for a 2D cartoon (age, clothes, look) so they can be drawn identically every time. "
                    "Be concise, one line each. Transcript: " + (topic + ". " + full if topic else full))[:500]
+    # compact one-line cast tokens, PREPENDED to every image prompt so the same characters recur identically
+    CAST = " ".join(bible.split())[:240] or "the same recurring main character with one fixed consistent design"
 
     # ---------- narration audio + envelope + pitch ----------
     NARR = os.path.join(ND, "narr.m4a"); WAVA = os.path.join(ND, "narr.wav")
@@ -206,7 +222,8 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        'Set char_voice to a person ONLY when the narration is clearly that character speaking dialogue; for plain narration use "none" and empty char_line. '
                        f'Narration line: {bk["hi"]}')
             bk["env"] = j.get("environment", "home")
-            bk["prompt"] = (j.get("prompt") or ("a flat 2D cartoon scene of " + bk["hi"][:60])) + CART
+            _scene = (j.get("prompt") or ("a 2D cartoon scene of " + bk["hi"][:60]))
+            bk["prompt"] = "Featuring " + CAST + ". " + _scene + CART
             bk["sfx"] = env_ambient(bk["env"]); bk["emo"] = j.get("emotion", "neutral"); bk["emoI"] = 0.6
             cv = (j.get("char_voice") or "none").strip(); cl = (j.get("char_line") or "").strip()
             bk["cvoice"] = cv if (cv != "none" and len(cl) >= 3) else "none"; bk["cline"] = cl if bk["cvoice"] != "none" else ""
@@ -218,7 +235,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         if os.path.exists(ip) and os.path.getsize(ip) > 5000: return True
         for a in range(6):
             url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(blocks[i]["prompt"]) +
-                   f"?width=1536&height=864&seed={14000+i+a*37}&model=flux&nologo=true&enhance=true")
+                   f"?width=1536&height=864&seed={EPISODE_SEED + a}&model=flux&nologo=true&enhance=false&private=true")
             try:
                 r = requests.get(url, timeout=240)
                 if r.status_code == 200 and len(r.content) > 5000: open(ip, "wb").write(r.content); return True
@@ -281,8 +298,8 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     def fit(path):
         im = Image.open(path).convert("RGB")
         if np.asarray(im).mean() < 98: im = ImageEnhance.Brightness(im).enhance(1.16)
-        im = ImageEnhance.Contrast(im).enhance(1.13); im = ImageEnhance.Color(im).enhance(1.13)
-        im = im.filter(ImageFilter.UnsharpMask(radius=2.2, percent=150, threshold=2))
+        im = ImageEnhance.Contrast(im).enhance(1.08); im = ImageEnhance.Color(im).enhance(1.10)
+        im = im.filter(ImageFilter.UnsharpMask(radius=1.3, percent=80, threshold=3))
         s = max(W / im.width, H / im.height) * 1.14
         return im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
     CUT = {i: fit(os.path.join(ND, f"b{i}.jpg")) for i in cut_idx if have(i)}
@@ -302,7 +319,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     try: bfont = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 24)
     except Exception: bfont = ImageFont.load_default()
     def brand(c):
-        d = ImageDraw.Draw(c, "RGBA"); d.text((W - 205, 20), "THE MYSTERY", font=bfont, fill=(255, 255, 255, 205))
+        return   # watermark disabled (was hardcoded "THE MYSTERY" on every frame)
     yy, xx = np.mgrid[0:H, 0:W]; vig = np.clip(1 - 0.34 * (((xx - W / 2) / (W / 2)) ** 2 + ((yy - H / 2) / (H / 2)) ** 2), 0.55, 1)[..., None]
     BOUNDS = [bk["a"] for bk in blocks] + [TOTAL]
     def idx_at(tt):
@@ -435,10 +452,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     prog(94, "Final video taiyaar ho raha hai...")
     if ok_sfx and ok_mus:
         runtext([FF, "-y", "-i", vid, "-i", NARR_USE,"-i", SFXF, "-i", MUSF, "-filter_complex",
-           "[1:a]volume=1.55,asplit=3[vmain][vk1][vk2];"
-           "[2:a]volume=0.5[sfx];[sfx][vk1]sidechaincompress=threshold=0.05:ratio=8:attack=15:release=350[sfxd];"
-           "[3:a]volume=0.34[mus];[mus][vk2]sidechaincompress=threshold=0.06:ratio=5:attack=20:release=400[musd];"
-           "[vmain][sfxd][musd]amix=inputs=3:normalize=0:duration=first[mx];[mx]alimiter=limit=0.95[ao]",
+           "[1:a]volume=1.28,asplit=3[vmain][vk1][vk2];"
+           "[2:a]volume=0.40[sfx];[sfx][vk1]sidechaincompress=threshold=0.05:ratio=8:attack=15:release=350[sfxd];"
+           "[3:a]volume=0.22[mus];[mus][vk2]sidechaincompress=threshold=0.06:ratio=5:attack=20:release=400[musd];"
+           "[vmain][sfxd][musd]amix=inputs=3:normalize=0:duration=first[mx];[mx]alimiter=limit=0.90[ao]",
            "-map", "0:v", "-map", "[ao]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path])
     else:
         runtext([FF, "-y", "-i", vid, "-i", NARR_USE,"-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path])
