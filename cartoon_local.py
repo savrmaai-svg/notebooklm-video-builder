@@ -7,8 +7,22 @@
 # flat-2D prompt + emotion via Pollinations-text (no Claude agents needed) -> recurring host
 # narrators with face-WARP viseme lip-sync in a cartoon studio -> story cutaway scenes (Pollinations
 # image) -> scene-aware ambient SFX + mood music -> burned Hindi captions -> mux the user's audio.
-import os, io, json, math, time, shutil, subprocess, urllib.parse, re
+import os, io, json, math, time, shutil, subprocess, urllib.parse, re, hashlib, zlib
 from pathlib import Path
+
+
+def _salt(*parts):
+    h = hashlib.sha1(("|".join(str(p) for p in parts)).encode("utf-8")).hexdigest()
+    return int(h[:8], 16)
+
+
+def _emo_music(emo, fallback):
+    e = (emo or "").lower()
+    if e in ("tense", "fear", "afraid", "anxious"): return "tense_suspense"
+    if e in ("sad", "grief", "sorrow"): return "soft_emotional"
+    if e in ("happy", "hopeful", "triumph", "joy", "proud"): return "triumphant"
+    if e in ("surprise", "shock", "action", "angry", "anger"): return "action_cinematic"
+    return fallback
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 HEAVY_IMPORT_HINT = ("Cartoon mode ke liye local dependencies chahiye. Install: "
@@ -85,12 +99,16 @@ def env_ambient(env):
     if any(k in e for k in ["workshop", "craft", "carv", "carpenter", "potter", "forge"]): return "workshop"
     if any(k in e for k in ["city", "street", "road", "traffic", "highway"]): return "traffic"
     if any(k in e for k in ["office", "corporate", "newsroom"]): return "office"
-    if any(k in e for k in ["crowd", "rally", "gathering", "temple", "public", "protest", "school"]): return "crowd"
+    if any(k in e for k in ["night", "dark", "midnight", "evening", "moon", "stars"]): return "night"
+    if any(k in e for k in ["river", "water", "lake", "pond", "stream", "rain", "sea", "ocean", "waterfall", "well"]): return "water"
+    if any(k in e for k in ["forest", "jungle", "woods", "tree", "grove"]): return "forest"
+    if any(k in e for k in ["temple", "shrine", "mandir", "prayer", "worship", "sacred", "holy"]): return "temple"
+    if any(k in e for k in ["crowd", "rally", "gathering", "public", "protest", "school", "class"]): return "crowd"
     if any(k in e for k in ["studio", "host", "anchor", "news"]): return "studio"
     if any(k in e for k in ["shop", "store"]): return "shop"
-    if any(k in e for k in ["village", "rural", "field", "farm", "hut", "forest", "jungle", "river", "outdoor", "garden"]): return "village"
-    if any(k in e for k in ["kitchen", "home", "house", "room", "interior"]): return "home"
-    return "soft"
+    if any(k in e for k in ["village", "rural", "field", "farm", "hut", "outdoor", "garden"]): return "village"
+    if any(k in e for k in ["kitchen", "home", "house", "room", "interior", "indoor", "bedroom", "library"]): return "indoor"
+    return "village"
 
 
 def _pick_music(hi):
@@ -121,11 +139,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     W, H, FPS, SZ, BLOCK = 1280, 720, 20, wf.SZ, 6.5
     work = Path(output_path).parent / "cartoon_work"; work.mkdir(parents=True, exist_ok=True)
     ND = str(work)
-    EPISODE_SEED = 4242   # ONE fixed seed for the whole episode -> consistent style + character look across every scene
-    CART = (", clean classic Indian kahaniya 2D cartoon, flat cel-shaded vibrant colors, bold even black outlines, "
-            "simple flat storybook background, ONE clear well-lit main character in the foreground with a large expressive face, "
-            "the SAME consistent character design every scene, sharp and clearly separated from the background, NOT blurry, "
-            "no soft focus, no sketch lines, no crosshatch, no pencil shading, no text, no watermark, no caption, "
+    # Per-EPISODE base seed (placeholder; REAL value DERIVED below from story content once `full` exists).
+    EPISODE_SEED = 4242
+    SCENE_STEP = 1013   # each scene gets its OWN seed -> every scene visually distinct (characters + background change per narration, storyboard-style); art STYLE stays uniform via CART, not the seed
+    CART = (", clean modern flat 2D cartoon storybook illustration, ONE consistent cel-shaded art style and colour palette across the whole video, bold even black outlines, "
+            "crisp expressive faces, characters and the background sharp and clearly separated, NOT blurry, no soft focus, no sketch lines, no crosshatch, no pencil shading, "
+            "borderless full-bleed picture, completely plain unbranded artwork, no channel logo, no studio logo, no signage, no letters or words anywhere in the frame, "
             "professional 2D animation, high detail")
 
     def run(a, **k): return subprocess.run(a, capture_output=True, **k)
@@ -175,11 +194,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     # ---------- character bible (consistency without agents) ----------
     prog(16, "Kahani ke characters samajhe ja rahe hain...")
     full = " ".join(s["text"] for s in segs)[:1600]
-    bible = _ptext("From this Hindi story transcript, name the 1-3 MAIN recurring characters and give each a short, "
-                   "fixed visual description for a 2D cartoon (age, clothes, look) so they can be drawn identically every time. "
-                   "Be concise, one line each. Transcript: " + (topic + ". " + full if topic else full))[:500]
-    # compact one-line cast tokens, PREPENDED to every image prompt so the same characters recur identically
-    CAST = " ".join(bible.split())[:240] or "the same recurring main character with one fixed consistent design"
+    _seed_src = (str(topic) + "|" + full + "|" + os.path.basename(str(audio_path))).encode("utf-8", "replace")
+    EPISODE_SEED = int(hashlib.sha256(_seed_src).hexdigest(), 16) % 2_000_000
+    bible = _ptext("From this Hindi story, briefly note the kinds of people/characters that appear across it (e.g. 'a young soldier; an elderly farmer; village women; a child; a police officer') so a scene director knows who exists. One short line, no preamble. "
+                   "Transcript: " + (topic + ". " + full if topic else full))[:500]
+    # loose cast hint for the scene director (NOT a forced single hero)
+    CAST = " ".join(bible.split())[:320] or "scene-appropriate characters"
 
     # ---------- narration audio + envelope + pitch ----------
     NARR = os.path.join(ND, "narr.m4a"); WAVA = os.path.join(ND, "narr.wav")
@@ -206,25 +226,37 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     # transitions (and rarer as the episode gets longer, so it never feels like a repetitive anchor show).
     for i, bk in enumerate(blocks):
         bk["kind"] = "cut"   # pure STORY visuals, NO talking-head anchor (per approved demo)
+        bk["salt"] = _salt(topic, full[:120], i)
         bk["mus"] = _pick_music(bk["hi"])
         if bk["kind"] == "host":
             bk["host"] = gender(bk["a"], bk["b"]); bk["sfx"] = "studio"; bk["emo"] = "neutral"; bk["emoI"] = 0.5
         else:
             prog(18 + int(20 * i / max(1, NB)), f"Scene {i+1}/{NB} ka background analyze ho raha hai...")
-            j = _pjson(f"You are a 2D cartoon scene director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. "
-                       f"Recurring characters: {bible}. For this narration line reply with ONLY a JSON object "
-                       '{"environment":"<specific setting e.g. village-workshop/market/city-street/school/home/temple>",'
-                       '"prompt":"<one clean English FLAT 2D cartoon scene depicting the line; the main character sharp in the '
-                       'foreground with bold black outlines, well-proportioned, not merging with a simpler background, no text>",'
-                       '"emotion":"<neutral/happy/sad/tense/hopeful/surprise>",'
+            j = _pjson(f"You are the STORYBOARD director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. People who may appear: {bible}. "
+                       "Decide WHO + WHERE + EMOTION for THIS line, then describe it. "
+                       "WHO (read the sentence's subject FIRST): a single explicit subject (a named person, first-person 'main', or an aloneness cue 'akela/sunsaan/deserted') = EXACTLY ONE person, no extra bystanders. "
+                       "Otherwise draw EVERY party the line names or implies: Hindi PLURALS (verb endings -gaye/-ruke/-aaye/-rahe the, words log/sab/logon, group nouns) and any number (do/teen/paanch/kai/bheed) MUST become MULTIPLE distinct people (about that many, cap 7) - collapsing a plural to one person is WRONG. "
+                       "Soldiers/jawans/squad/patrol/troops/border-guards = MULTIPLE soldiers; a named officer or hero still appears WITH his men/team/family/crowd whenever the line places them together. "
+                       "A place word is NOT automatically a crowd - a location used only as a destination/backdrop for one named person ('apne gaon ki or') = distant/empty scenery, not a populated crowd. "
+                       "LOCK each person's GENDER (from name, kinship maa/beti/pita/beta, or gendered verb dekha/dekhi), AGE (baccha/nanha=child, naujawan=young, buzurg/budha/dadi=elderly) and PROFESSION attire (jawan=fatigues+rifle, police=khaki+cap, farmer=dhoti+field tools, doctor=white coat, judge=black robe); never default to a generic middle-aged male. "
+                       "WHERE = a SPECIFIC setting: sub-location + time-of-day + weather/season (village/city-street/military-border/battlefield/school/courtroom/police-station/hospital-ward/market/home/temple/forest/riverbank/railway-platform/refugee-camp/rooftop/desert-road...). Match any stated time/weather (night/dawn/rain/fog/heat) in the lighting and sky, keep ALL concrete nouns the line hinges on in-frame, and make every scene's backdrop different from the others; never default to a generic living room. "
+                       "An unseen/ambiguous subject ('something moved', 'a shadow', 'koi aahat') stays SUGGESTED (silhouette/shadow/off-frame), not a clear person. A line about scenery, a number, or an abstract idea with NO human = a NO-PERSON scene (landscape/object/symbol, e.g. hope=a lit diya in darkness), no decorative filler person. "
+                       "EMOTION = the emotional CORE of the key event (a lost child in a busy bazaar is tense/sad, not happy); if the line turns (despair->hope) use the RESOLVING end-state and keep both cues visible; in a multi-person scene give EACH person their own correct expression. "
+                       "For consecutive lines about the SAME person, hold their gender/age/build/clothing constant; only scene, action and emotion change. "
+                       "Reply with ONLY a JSON object: "
+                       '{"environment":"<specific setting + time-of-day + weather for THIS line>",'
+                       '"prompt":"<one clean English 2D cartoon storyboard scene: the correct character(s) (ONE or SEVERAL, each with locked gender/age/profession look and their own expression) doing the action, in the detailed scene-matched background with every key cue visible; bold black outlines, well-proportioned, no logo and no letters anywhere>",'
+                       '"emotion":"<neutral/happy/hopeful/calm/uneasy/tense/sad/angry/surprise/emphatic>",'
                        '"char_voice":"<none | child | elderly_female | elderly_male | adult_male | adult_female>",'
-                       '"char_line":"<if the line clearly is a STORY CHARACTER (a child/old woman/man) speaking, write the SHORT Hindi sentence they say; otherwise empty>"}. '
-                       'Set char_voice to a person ONLY when the narration is clearly that character speaking dialogue; for plain narration use "none" and empty char_line. '
+                       '"char_line":"<if the line is clearly a character speaking, the SHORT Hindi sentence they say; otherwise empty>"}. '
+                       'Use char_voice for a person ONLY when the narration is clearly that character speaking; otherwise "none" and empty char_line. '
                        f'Narration line: {bk["hi"]}')
             bk["env"] = j.get("environment", "home")
             _scene = (j.get("prompt") or ("a 2D cartoon scene of " + bk["hi"][:60]))
-            bk["prompt"] = "Featuring " + CAST + ". " + _scene + CART
+            bk["prompt"] = (_scene + ", set in a detailed " + str(bk["env"]) +
+                            " environment - a distinct background matching THIS scene" + CART)
             bk["sfx"] = env_ambient(bk["env"]); bk["emo"] = j.get("emotion", "neutral"); bk["emoI"] = 0.6
+            bk["mus"] = _emo_music(bk["emo"], bk["mus"])
             cv = (j.get("char_voice") or "none").strip(); cl = (j.get("char_line") or "").strip()
             bk["cvoice"] = cv if (cv != "none" and len(cl) >= 3) else "none"; bk["cline"] = cl if bk["cvoice"] != "none" else ""
 
@@ -233,9 +265,11 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     def fetch_img(i):
         ip = os.path.join(ND, f"b{i}.jpg")
         if os.path.exists(ip) and os.path.getsize(ip) > 5000: return True
+        scene_seed = (EPISODE_SEED + i * SCENE_STEP) % 2_000_000
         for a in range(6):
+            seed = (scene_seed + a * 131071) % 2_000_000
             url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(blocks[i]["prompt"]) +
-                   f"?width=1536&height=864&seed={EPISODE_SEED + a}&model=flux&nologo=true&enhance=false&private=true")
+                   f"?width=1536&height=864&seed={seed}&model=flux&nologo=true&enhance=false&private=true")
             try:
                 r = requests.get(url, timeout=240)
                 if r.status_code == 200 and len(r.content) > 5000: open(ip, "wb").write(r.content); return True
@@ -355,8 +389,15 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         cmd = [FF, "-y"]
         for s in ins: cmd += ["-f", "lavfi", "-i", s]
         cmd += ["-filter_complex", fc, "-map", "[o]", "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", "-t", str(round(d, 3)), out]; run(cmd)
-    def sfx_bed(tag, d, out):
+    def _jit(fc, jf, jd):
+        return fc[:fc.rfind("[o]")] + (",tremolo=f=%.3f:d=%.2f" % (jf, jd)) + "[o]"
+    def sfx_bed(tag, d, out, salt=0):
         T = {
+         "night": (["anoisesrc=d=%s:c=brown:a=0.35" % d, "sine=f=900:d=%s" % d], "[0:a]lowpass=f=380,highpass=f=55,volume=0.9[a];[1:a]tremolo=f=6:d=1.0,highpass=f=700,volume=0.07[b];[a][b]amix=inputs=2:normalize=0[o]"),
+         "water": (["anoisesrc=d=%s:c=white:a=0.55" % d, "anoisesrc=d=%s:c=brown:a=0.35" % d], "[0:a]highpass=f=300,lowpass=f=3200,tremolo=f=1.1:d=0.6,volume=0.7[a];[1:a]lowpass=f=500,tremolo=f=0.4:d=0.5,volume=0.8[b];[a][b]amix=inputs=2:normalize=0[o]"),
+         "forest": (["anoisesrc=d=%s:c=brown:a=0.4" % d, "sine=f=3200:d=%s" % d], "[0:a]lowpass=f=700,highpass=f=80,tremolo=f=0.3:d=0.6,volume=0.9[a];[1:a]vibrato=f=9:d=1.0,tremolo=f=6:d=1.0,highpass=f=2400,volume=0.12[b];[a][b]amix=inputs=2:normalize=0[o]"),
+         "temple": (["anoisesrc=d=%s:c=brown:a=0.22" % d, "sine=f=130.81:d=%s" % d], "[0:a]lowpass=f=360,volume=0.5[a];[1:a]tremolo=f=0.25:d=0.6,aecho=0.8:0.6:600:0.4,volume=0.14[b];[a][b]amix=inputs=2:normalize=0[o]"),
+         "indoor": (["anoisesrc=d=%s:c=brown:a=0.26" % d, "sine=f=115:d=%s" % d], "[0:a]lowpass=f=430,volume=0.5[a];[1:a]volume=0.04[b];[a][b]amix=inputs=2:normalize=0[o]"),
          "wind": (["anoisesrc=d=%s:c=brown:a=0.9" % d], "[0:a]lowpass=f=550,highpass=f=70,tremolo=f=0.15:d=0.7,tremolo=f=0.5:d=0.3,volume=2.4[o]"),
          "rain": (["anoisesrc=d=%s:c=white:a=0.5" % d], "[0:a]highpass=f=450,lowpass=f=8000,volume=1.5[o]"),
          "market": (["anoisesrc=d=%s:c=brown:a=0.75" % d, "anoisesrc=d=%s:c=white:a=0.45" % d], "[0:a]lowpass=f=1100,volume=1.6[a];[1:a]highpass=f=1400,lowpass=f=6500,tremolo=f=9:d=0.7,tremolo=f=4:d=0.5,volume=0.55[b];[a][b]amix=inputs=2:normalize=0[o]"),
@@ -367,9 +408,11 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
          "office": (["anoisesrc=d=%s:c=brown:a=0.28" % d, "sine=f=120:d=%s" % d], "[0:a]lowpass=f=420,volume=0.5[a];[1:a]volume=0.05[b];[a][b]amix=inputs=2:normalize=0[o]"),
          "studio": (["anoisesrc=d=%s:c=brown:a=0.2" % d, "sine=f=110:d=%s" % d], "[0:a]lowpass=f=400,volume=0.4[a];[1:a]volume=0.03[b];[a][b]amix=inputs=2:normalize=0[o]"),
         }
-        ins, fc = T.get(tag, (["anoisesrc=d=%s:c=brown:a=0.2" % d], "[0:a]lowpass=f=420,volume=0.4[o]"))
-        lavfi(ins, fc, d, out)
-    def music_bed(mood, d, out):
+        ins, fc = T.get(tag, (["anoisesrc=d=%s:c=brown:a=0.45" % d], "[0:a]lowpass=f=600,highpass=f=70,volume=1.0[o]"))
+        jf = 0.10 + (salt % 17) * 0.02
+        jd = 0.10 + (salt // 17 % 7) * 0.04
+        lavfi(ins, _jit(fc, jf, jd), d, out)
+    def music_bed(mood, d, out, salt=0):
         M = {
          "triumphant": (["sine=f=261.63:d=%s" % d, "sine=f=329.63:d=%s" % d, "sine=f=392.0:d=%s" % d, "sine=f=523.25:d=%s" % d], "[0:a]volume=0.18[a];[1:a]volume=0.15[b];[2:a]volume=0.15[c];[3:a]volume=0.09[e];[a][b][c][e]amix=inputs=4:normalize=0,tremolo=f=0.3:d=0.2,aecho=0.8:0.5:300:0.3[o]"),
          "soft_emotional": (["sine=f=220:d=%s" % d, "sine=f=261.63:d=%s" % d, "sine=f=329.63:d=%s" % d], "[0:a]volume=0.14[a];[1:a]volume=0.12[b];[2:a]volume=0.10[c];[a][b][c]amix=inputs=3:normalize=0,tremolo=f=0.2:d=0.25,aecho=0.9:0.4:420:0.35,lowpass=f=2200[o]"),
@@ -377,11 +420,14 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
          "action_cinematic": (["sine=f=55:d=%s" % d, "sine=f=110:d=%s" % d, "sine=f=164.81:d=%s" % d, "anoisesrc=d=%s:c=brown:a=0.25" % d], "[0:a]volume=0.32,tremolo=f=2.0:d=0.85[a];[1:a]volume=0.18,tremolo=f=2.0:d=0.6[b];[2:a]volume=0.14[c];[3:a]lowpass=f=180,volume=0.6,tremolo=f=2.0:d=0.8[d];[a][b][c][d]amix=inputs=4:normalize=0,aecho=0.8:0.4:250:0.3[o]"),
         }
         ins, fc = M.get(mood, (["sine=f=60:d=%s" % d], "[0:a]volume=0.05[o]"))
-        lavfi(ins, fc, d, out)
+        jf = 0.12 + (salt % 13) * 0.02
+        jd = 0.10 + (salt // 13 % 6) * 0.03
+        lavfi(ins, _jit(fc, jf, jd), d, out)
     sp = []; mp = []
     for i, bk in enumerate(blocks):
-        d = bk["b"] - bk["a"]; fs = os.path.join(ND, f"_s{i}.wav"); sfx_bed(bk["sfx"], d, fs); sp.append(fs)
-        fm = os.path.join(ND, f"_m{i}.wav"); music_bed(bk["mus"], d, fm); mp.append(fm)
+        slt = bk.get("salt", _salt(topic, i))
+        d = bk["b"] - bk["a"]; fs = os.path.join(ND, f"_s{i}.wav"); sfx_bed(bk["sfx"], d, fs, slt); sp.append(fs)
+        fm = os.path.join(ND, f"_m{i}.wav"); music_bed(bk["mus"], d, fm, slt); mp.append(fm)
     def concat(parts, out):
         lst = out + ".txt"
         with io.open(lst, "w", encoding="utf-8") as fh:        # close before ffmpeg reads it
