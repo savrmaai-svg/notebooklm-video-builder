@@ -16,6 +16,13 @@ def _salt(*parts):
     return int(h[:8], 16)
 
 
+def _ckey(label):
+    """Stable identity key for a character so the same person reuses one seed+look across scenes."""
+    k = re.sub(r"[^a-z0-9 ]", "", (label or "").lower())
+    k = re.sub(r"\b(the|a|an|young|old|elderly|middle aged|man|woman|person|guy)\b", "", k)
+    return re.sub(r"\s+", " ", k).strip()
+
+
 def _emo_music(emo, fallback):
     e = (emo or "").lower()
     if e in ("tense", "fear", "afraid", "anxious"): return "tense_suspense"
@@ -105,7 +112,7 @@ def env_ambient(env):
     if any(k in e for k in ["temple", "shrine", "mandir", "prayer", "worship", "sacred", "holy"]): return "temple"
     if any(k in e for k in ["crowd", "rally", "gathering", "public", "protest", "school", "class"]): return "crowd"
     if any(k in e for k in ["studio", "host", "anchor", "news"]): return "studio"
-    if any(k in e for k in ["shop", "store"]): return "shop"
+    if any(k in e for k in ["shop", "store"]): return "market"
     if any(k in e for k in ["village", "rural", "field", "farm", "hut", "outdoor", "garden"]): return "village"
     if any(k in e for k in ["kitchen", "home", "house", "room", "interior", "indoor", "bedroom", "library"]): return "indoor"
     return "village"
@@ -137,7 +144,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     FF = imageio_ffmpeg.get_ffmpeg_exe()
     audio_path = str(audio_path); output_path = str(output_path)
     W, H, FPS, SZ, BLOCK = 1280, 720, 20, wf.SZ, 6.5
-    work = Path(output_path).parent / "cartoon_work"; work.mkdir(parents=True, exist_ok=True)
+    work = Path(output_path).parent / "cartoon_work"
+    if work.exists():
+        shutil.rmtree(work, ignore_errors=True)   # P0: never inherit a prior story's b{i}.jpg/_s*/_m* (was the all-stories-same cause)
+    work.mkdir(parents=True, exist_ok=True)
     ND = str(work)
     # Per-EPISODE base seed (placeholder; REAL value DERIVED below from story content once `full` exists).
     EPISODE_SEED = 4242
@@ -194,7 +204,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     # ---------- character bible (consistency without agents) ----------
     prog(16, "Kahani ke characters samajhe ja rahe hain...")
     full = " ".join(s["text"] for s in segs)[:1600]
-    _seed_src = (str(topic) + "|" + full + "|" + os.path.basename(str(audio_path))).encode("utf-8", "replace")
+    # P1: hash the DECODED audio PCM (so different stories diverge) + a per-render token (so re-runs differ).
+    _audio_sig = hashlib.sha256(np.ascontiguousarray(audio16).tobytes()).hexdigest()[:16]
+    _run_salt = f"{output_path}|{time.time_ns()}|{os.getpid()}"
+    _seed_src = (str(topic) + "|" + full + "|" + _audio_sig + "|" + _run_salt).encode("utf-8", "replace")
     EPISODE_SEED = int(hashlib.sha256(_seed_src).hexdigest(), 16) % 2_000_000
     bible = _ptext("From this Hindi story, briefly note the kinds of people/characters that appear across it (e.g. 'a young soldier; an elderly farmer; village women; a child; a police officer') so a scene director knows who exists. One short line, no preamble. "
                    "Transcript: " + (topic + ". " + full if topic else full))[:500]
@@ -224,6 +237,11 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     EREC = {e["name"]: e for e in json.load(io.open(os.path.join(ASSETS, "anim_spec.json"), encoding="utf-8"))["result"]["emotions"]}
     # story cutaways should DOMINATE; the talking-head host appears only for the intro + sparse
     # transitions (and rarer as the episode gets longer, so it never feels like a repetitive anchor show).
+    if not bible.strip():   # P2: never let the cast anchor collapse to empty on a text-endpoint hiccup
+        bible = ("characters from this Hindi story: " + (str(topic) + " " if topic else "") + full[:240]).strip()
+    CHAR_LEDGER = {}   # ckey -> locked look string (same person -> same look across scenes)
+    LEDGER_ORDER = []  # recency of characters seen
+    prev_recap = ""
     for i, bk in enumerate(blocks):
         bk["kind"] = "cut"   # pure STORY visuals, NO talking-head anchor (per approved demo)
         bk["salt"] = _salt(topic, full[:120], i)
@@ -232,7 +250,10 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
             bk["host"] = gender(bk["a"], bk["b"]); bk["sfx"] = "studio"; bk["emo"] = "neutral"; bk["emoI"] = 0.5
         else:
             prog(18 + int(20 * i / max(1, NB)), f"Scene {i+1}/{NB} ka background analyze ho raha hai...")
-            j = _pjson(f"You are the STORYBOARD director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. People who may appear: {bible}. "
+            _known = "; ".join(f"{kk} -> {CHAR_LEDGER[kk]}" for kk in LEDGER_ORDER[-6:]) or "none yet"
+            _ctx = (f"CONTINUITY MEMORY (reuse these EXACT looks, do NOT redesign an already-shown person): {_known}. "
+                    f"Previous scene was: {prev_recap or 'none'}. ")
+            j = _pjson(f"You are the STORYBOARD director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. People who may appear: {bible}. " + _ctx +
                        "Decide WHO + WHERE + EMOTION for THIS line, then describe it. "
                        "WHO (read the sentence's subject FIRST): a single explicit subject (a named person, first-person 'main', or an aloneness cue 'akela/sunsaan/deserted') = EXACTLY ONE person, no extra bystanders. "
                        "Otherwise draw EVERY party the line names or implies: Hindi PLURALS (verb endings -gaye/-ruke/-aaye/-rahe the, words log/sab/logon, group nouns) and any number (do/teen/paanch/kai/bheed) MUST become MULTIPLE distinct people (about that many, cap 7) - collapsing a plural to one person is WRONG. "
@@ -243,8 +264,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        "An unseen/ambiguous subject ('something moved', 'a shadow', 'koi aahat') stays SUGGESTED (silhouette/shadow/off-frame), not a clear person. A line about scenery, a number, or an abstract idea with NO human = a NO-PERSON scene (landscape/object/symbol, e.g. hope=a lit diya in darkness), no decorative filler person. "
                        "EMOTION = the emotional CORE of the key event (a lost child in a busy bazaar is tense/sad, not happy); if the line turns (despair->hope) use the RESOLVING end-state and keep both cues visible; in a multi-person scene give EACH person their own correct expression. "
                        "For consecutive lines about the SAME person, hold their gender/age/build/clothing constant; only scene, action and emotion change. "
+                       "If a person here is ALREADY in CONTINUITY MEMORY, REUSE that person's exact gender/age/build/clothing/colours verbatim; only their action, the scene and emotion may change. "
                        "Reply with ONLY a JSON object: "
                        '{"environment":"<specific setting + time-of-day + weather for THIS line>",'
+                       '"scene_kind":"<one_person | multiple_people | no_person>",'
+                       '"who":"<short stable identity tag of the PRIMARY person if one_person (e.g. ravi soldier); empty otherwise>",'
+                       '"look":"<if one_person: that persons locked visual age and gender and build and hair and clothing and colours and props; empty otherwise>",'
                        '"prompt":"<one clean English 2D cartoon storyboard scene: the correct character(s) (ONE or SEVERAL, each with locked gender/age/profession look and their own expression) doing the action, in the detailed scene-matched background with every key cue visible; bold black outlines, well-proportioned, no logo and no letters anywhere>",'
                        '"emotion":"<neutral/happy/hopeful/calm/uneasy/tense/sad/angry/surprise/emphatic>",'
                        '"char_voice":"<none | child | elderly_female | elderly_male | adult_male | adult_female>",'
@@ -252,39 +277,86 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        'Use char_voice for a person ONLY when the narration is clearly that character speaking; otherwise "none" and empty char_line. '
                        f'Narration line: {bk["hi"]}')
             bk["env"] = j.get("environment", "home")
+            sk = (j.get("scene_kind") or "").strip().lower()
+            bk["scene_kind"] = sk if sk in ("one_person", "multiple_people", "no_person") else ""
+            who = _ckey(j.get("who")); look = " ".join((j.get("look") or "").split())[:240]
+            bk["ckey"] = who if bk["scene_kind"] == "one_person" else ""
+            if bk["ckey"]:
+                if bk["ckey"] in CHAR_LEDGER: look = CHAR_LEDGER[bk["ckey"]] or look   # P2: reuse established look verbatim
+                elif look: CHAR_LEDGER[bk["ckey"]] = look
+                if bk["ckey"] in LEDGER_ORDER: LEDGER_ORDER.remove(bk["ckey"])
+                LEDGER_ORDER.append(bk["ckey"])
             _scene = (j.get("prompt") or ("a 2D cartoon scene of " + bk["hi"][:60]))
+            if bk["ckey"] and look: _scene = _scene + ". The SAME recurring person, consistent design: " + look
             bk["prompt"] = (_scene + ", set in a detailed " + str(bk["env"]) +
-                            " environment - a distinct background matching THIS scene" + CART)
+                            " environment - a distinct background matching THIS scene, cast context: " + CAST + CART)
             bk["sfx"] = env_ambient(bk["env"]); bk["emo"] = j.get("emotion", "neutral"); bk["emoI"] = 0.6
             bk["mus"] = _emo_music(bk["emo"], bk["mus"])
             cv = (j.get("char_voice") or "none").strip(); cl = (j.get("char_line") or "").strip()
             bk["cvoice"] = cv if (cv != "none" and len(cl) >= 3) else "none"; bk["cline"] = cl if bk["cvoice"] != "none" else ""
+            _whotxt = (look or ("several people" if bk["scene_kind"] == "multiple_people"
+                       else ("no people, scenery only" if bk["scene_kind"] == "no_person" else bk["hi"][:50])))
+            prev_recap = (f"{_whotxt} at {bk['env']}")[:200]
 
     # ---------- cutaway images ----------
     cut_idx = [i for i, bk in enumerate(blocks) if bk["kind"] == "cut"]
     def fetch_img(i):
         ip = os.path.join(ND, f"b{i}.jpg")
         if os.path.exists(ip) and os.path.getsize(ip) > 5000: return True
-        scene_seed = (EPISODE_SEED + i * SCENE_STEP) % 2_000_000
-        for a in range(6):
+        _ck = blocks[i].get("ckey") or ""
+        if _ck:
+            scene_seed = (EPISODE_SEED + _salt(_ck)) % 2_000_000                                  # P2e: same person -> stable face
+        else:
+            scene_seed = (EPISODE_SEED + i * SCENE_STEP + blocks[i].get("salt", 0)) % 2_000_000   # crowd/no-person -> per-scene distinct
+        ATTEMPTS = 5
+        for a in range(ATTEMPTS):
             seed = (scene_seed + a * 131071) % 2_000_000
             url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(blocks[i]["prompt"]) +
-                   f"?width=1536&height=864&seed={seed}&model=flux&nologo=true&enhance=false&private=true")
+                   f"?width=1024&height=576&seed={seed}&model=flux&nologo=true&enhance=false&private=true")
+            wait = 0.0
             try:
-                r = requests.get(url, timeout=240)
+                r = requests.get(url, timeout=120)
                 if r.status_code == 200 and len(r.content) > 5000: open(ip, "wb").write(r.content); return True
-            except Exception: pass
-            time.sleep(5)
+                if r.status_code in (429, 500, 502, 503, 504):
+                    try: wait = float(r.headers.get("Retry-After") or 0.0)
+                    except Exception: wait = 0.0
+            except Exception:
+                pass
+            if a == ATTEMPTS - 1: break
+            backoff = min(90.0, 8.0 * (2 ** a))                  # P4: 8,16,32,64,90 instead of flat 5s
+            if wait > backoff: backoff = min(180.0, wait)         # honour Retry-After
+            backoff += (_salt(str(i)) % 1000) / 1000.0 * 3.0      # jitter de-syncs workers
+            time.sleep(backoff)
         return False
     prog(40, "Scene backgrounds generate ho rahe hain...")
     import concurrent.futures as cf
-    with cf.ThreadPoolExecutor(max_workers=4) as ex: list(ex.map(fetch_img, cut_idx))
+    with cf.ThreadPoolExecutor(max_workers=2) as ex: list(ex.map(fetch_img, cut_idx))
     def have(i): return os.path.exists(os.path.join(ND, f"b{i}.jpg")) and os.path.getsize(os.path.join(ND, f"b{i}.jpg")) > 5000
-    for i in [i for i in cut_idx if not have(i)]: fetch_img(i)
+    for _pass in range(2):                                   # P4: extra serial retries; limiter usually relaxes after the burst
+        miss = [i for i in cut_idx if not have(i)]
+        if not miss: break
+        for i in miss: fetch_img(i)
     exist = [i for i in cut_idx if have(i)]
-    for i in cut_idx:
-        if not have(i) and exist:
-            shutil.copy(os.path.join(ND, f"b{min(exist, key=lambda e: abs(e-i))}.jpg"), os.path.join(ND, f"b{i}.jpg"))
+    missing = [i for i in cut_idx if not have(i)]
+    if cut_idx and (not exist or len(missing) > max(2, len(cut_idx) // 3)):   # P3: never ship a one-frame video
+        raise RuntimeError(f"Pollinations rate-limited: sirf {len(exist)}/{len(cut_idx)} scene images bani. "
+                           "Video NAHI banayi (taaki sab same frame na ho). Thodi der baad dobara try karein.")
+    def _placeholder(i):                                     # P3: scene-DISTINCT gradient, NOT a copy of a neighbour
+        sd = (EPISODE_SEED + i * SCENE_STEP + blocks[i].get("salt", 0)) % 2_000_000
+        rnd = np.random.RandomState(sd)
+        c0 = tuple(int(x) for x in rnd.randint(25, 210, 3)); c1 = tuple(int(x) for x in rnd.randint(25, 210, 3))
+        gx = (np.linspace(0, 1, 1024)[None, :] + np.linspace(0, 1, 576)[:, None]) / 2.0
+        base = np.zeros((576, 1024, 3), np.uint8)
+        for ch in range(3): base[..., ch] = (c0[ch] * (1 - gx) + c1[ch] * gx).astype(np.uint8)
+        im = Image.fromarray(base, "RGB"); dr = ImageDraw.Draw(im)
+        for _ in range(6):
+            x0, y0 = rnd.randint(0, 900), rnd.randint(0, 500)
+            dr.ellipse([x0, y0, x0 + rnd.randint(60, 280), y0 + rnd.randint(60, 280)],
+                       fill=tuple(int(x) for x in rnd.randint(20, 235, 3)))
+        im.save(os.path.join(ND, f"b{i}.jpg"), "JPEG", quality=88)
+    if missing:
+        prog(40, f"WARNING: {len(missing)}/{len(cut_idx)} scenes distinct placeholder se bhare (Pollinations partial fail).")
+        for i in missing: _placeholder(i)
 
     # ---------- viseme / emotion timelines ----------
     def emo_disp(name):
@@ -389,9 +461,15 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         cmd = [FF, "-y"]
         for s in ins: cmd += ["-f", "lavfi", "-i", s]
         cmd += ["-filter_complex", fc, "-map", "[o]", "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", "-t", str(round(d, 3)), out]; run(cmd)
+    def _seed_noise(ins, base):                              # P5: seed anoisesrc so noise differs per scene & per story
+        out = []
+        for n, s in enumerate(ins):
+            if s.startswith("anoisesrc="): s = s + (":s=%d" % ((base + n * 2654435761) % 2_000_000_000))
+            out.append(s)
+        return out
     def _jit(fc, jf, jd):
         return fc[:fc.rfind("[o]")] + (",tremolo=f=%.3f:d=%.2f" % (jf, jd)) + "[o]"
-    def sfx_bed(tag, d, out, salt=0):
+    def sfx_bed(tag, d, out, salt=0, idx=0):
         T = {
          "night": (["anoisesrc=d=%s:c=brown:a=0.35" % d, "sine=f=900:d=%s" % d], "[0:a]lowpass=f=380,highpass=f=55,volume=0.9[a];[1:a]tremolo=f=6:d=1.0,highpass=f=700,volume=0.07[b];[a][b]amix=inputs=2:normalize=0[o]"),
          "water": (["anoisesrc=d=%s:c=white:a=0.55" % d, "anoisesrc=d=%s:c=brown:a=0.35" % d], "[0:a]highpass=f=300,lowpass=f=3200,tremolo=f=1.1:d=0.6,volume=0.7[a];[1:a]lowpass=f=500,tremolo=f=0.4:d=0.5,volume=0.8[b];[a][b]amix=inputs=2:normalize=0[o]"),
@@ -409,10 +487,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
          "studio": (["anoisesrc=d=%s:c=brown:a=0.2" % d, "sine=f=110:d=%s" % d], "[0:a]lowpass=f=400,volume=0.4[a];[1:a]volume=0.03[b];[a][b]amix=inputs=2:normalize=0[o]"),
         }
         ins, fc = T.get(tag, (["anoisesrc=d=%s:c=brown:a=0.45" % d], "[0:a]lowpass=f=600,highpass=f=70,volume=1.0[o]"))
-        jf = 0.10 + (salt % 17) * 0.02
-        jd = 0.10 + (salt // 17 % 7) * 0.04
-        lavfi(ins, _jit(fc, jf, jd), d, out)
-    def music_bed(mood, d, out, salt=0):
+        ins = _seed_noise(ins, (EPISODE_SEED + salt + idx * 7919) % 2_000_000_000)
+        jf = 0.10 + (salt % 17) * 0.02; jd = 0.16 + (salt // 17 % 7) * 0.06
+        cut = 220 + (salt % 23) * 86                          # salt-chosen lowpass -> audible timbre shift per scene
+        fc2 = fc[:fc.rfind("[o]")] + (",lowpass=f=%d,tremolo=f=%.3f:d=%.2f" % (cut, jf, jd)) + "[o]"
+        lavfi(ins, fc2, d, out)
+    def music_bed(mood, d, out, salt=0, idx=0):
         M = {
          "triumphant": (["sine=f=261.63:d=%s" % d, "sine=f=329.63:d=%s" % d, "sine=f=392.0:d=%s" % d, "sine=f=523.25:d=%s" % d], "[0:a]volume=0.18[a];[1:a]volume=0.15[b];[2:a]volume=0.15[c];[3:a]volume=0.09[e];[a][b][c][e]amix=inputs=4:normalize=0,tremolo=f=0.3:d=0.2,aecho=0.8:0.5:300:0.3[o]"),
          "soft_emotional": (["sine=f=220:d=%s" % d, "sine=f=261.63:d=%s" % d, "sine=f=329.63:d=%s" % d], "[0:a]volume=0.14[a];[1:a]volume=0.12[b];[2:a]volume=0.10[c];[a][b][c]amix=inputs=3:normalize=0,tremolo=f=0.2:d=0.25,aecho=0.9:0.4:420:0.35,lowpass=f=2200[o]"),
@@ -420,14 +500,17 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
          "action_cinematic": (["sine=f=55:d=%s" % d, "sine=f=110:d=%s" % d, "sine=f=164.81:d=%s" % d, "anoisesrc=d=%s:c=brown:a=0.25" % d], "[0:a]volume=0.32,tremolo=f=2.0:d=0.85[a];[1:a]volume=0.18,tremolo=f=2.0:d=0.6[b];[2:a]volume=0.14[c];[3:a]lowpass=f=180,volume=0.6,tremolo=f=2.0:d=0.8[d];[a][b][c][d]amix=inputs=4:normalize=0,aecho=0.8:0.4:250:0.3[o]"),
         }
         ins, fc = M.get(mood, (["sine=f=60:d=%s" % d], "[0:a]volume=0.05[o]"))
-        jf = 0.12 + (salt % 13) * 0.02
-        jd = 0.10 + (salt // 13 % 6) * 0.03
-        lavfi(ins, _jit(fc, jf, jd), d, out)
+        ins = _seed_noise(ins, (EPISODE_SEED + salt + idx * 6271) % 2_000_000_000)
+        k = (salt % 8) - 3; ratio = 2.0 ** (k / 12.0)        # transpose chord by a salt-chosen interval
+        ins = [(re.sub(r"f=([0-9.]+)", lambda m: "f=%.3f" % (float(m.group(1)) * ratio), s) if s.startswith("sine=") else s) for s in ins]
+        jf = 0.12 + (salt % 13) * 0.02; jd = 0.18 + (salt // 13 % 6) * 0.05
+        fc2 = fc[:fc.rfind("[o]")] + (",tremolo=f=%.3f:d=%.2f" % (jf, jd)) + "[o]"
+        lavfi(ins, fc2, d, out)
     sp = []; mp = []
     for i, bk in enumerate(blocks):
         slt = bk.get("salt", _salt(topic, i))
-        d = bk["b"] - bk["a"]; fs = os.path.join(ND, f"_s{i}.wav"); sfx_bed(bk["sfx"], d, fs, slt); sp.append(fs)
-        fm = os.path.join(ND, f"_m{i}.wav"); music_bed(bk["mus"], d, fm, slt); mp.append(fm)
+        d = bk["b"] - bk["a"]; fs = os.path.join(ND, f"_s{i}.wav"); sfx_bed(bk["sfx"], d, fs, slt, i); sp.append(fs)
+        fm = os.path.join(ND, f"_m{i}.wav"); music_bed(bk["mus"], d, fm, slt, i); mp.append(fm)
     def concat(parts, out):
         lst = out + ".txt"
         with io.open(lst, "w", encoding="utf-8") as fh:        # close before ffmpeg reads it
