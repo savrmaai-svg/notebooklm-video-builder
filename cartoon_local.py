@@ -152,10 +152,13 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     # Per-EPISODE base seed (placeholder; REAL value DERIVED below from story content once `full` exists).
     EPISODE_SEED = 4242
     SCENE_STEP = 1013   # each scene gets its OWN seed -> every scene visually distinct (characters + background change per narration, storyboard-style); art STYLE stays uniform via CART, not the seed
-    CART = (", clean modern flat 2D cartoon storybook illustration, ONE consistent cel-shaded art style and colour palette across the whole video, bold even black outlines, "
-            "crisp expressive faces, characters and the background sharp and clearly separated, NOT blurry, no soft focus, no sketch lines, no crosshatch, no pencil shading, "
+    CART = (", clean flat 2D cartoon storybook illustration in ONE consistent cel-shaded art style and colour palette across the whole video, stylised NOT photoreal, NOT 3D, "
+            "bold even black outlines, simple flat colour fills with soft cel shading, "
+            "correct human anatomy with natural body proportions and a normal-sized head, each face drawn clearly with two symmetric eyes that each have a visible round pupil and iris, one nose, one mouth, natural hands with five fingers, "
+            "FEW large clearly-drawn characters framed medium or close so every face is large and readable, never a crowd of tiny faces, "
+            "characters and the background sharp and clearly separated, NOT blurry, no soft focus, no sketch lines, no crosshatch, no pencil shading, "
             "borderless full-bleed picture, completely plain unbranded artwork, no channel logo, no studio logo, no signage, no letters or words anywhere in the frame, "
-            "professional 2D animation, high detail")
+            "clean professional 2D animation. Avoid: distorted or melted face, asymmetric or pupil-less or googly eyes, malformed hands, extra or fused fingers, stretched head, mutated anatomy")
 
     def run(a, **k): return subprocess.run(a, capture_output=True, **k)
     def runtext(a, **k):
@@ -258,6 +261,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        "WHO (read the sentence's subject FIRST): a single explicit subject (a named person, first-person 'main', or an aloneness cue 'akela/sunsaan/deserted') = EXACTLY ONE person, no extra bystanders. "
                        "Otherwise draw EVERY party the line names or implies: Hindi PLURALS (verb endings -gaye/-ruke/-aaye/-rahe the, words log/sab/logon, group nouns) and any number (do/teen/paanch/kai/bheed) MUST become MULTIPLE distinct people (about that many, cap 7) - collapsing a plural to one person is WRONG. "
                        "Soldiers/jawans/squad/patrol/troops/border-guards = MULTIPLE soldiers; a named officer or hero still appears WITH his men/team/family/crowd whenever the line places them together. "
+                       "When several people appear, draw AT MOST 4 of them clearly and large in the foreground and render any larger group as soft simplified out-of-focus background figures, NEVER many tiny detailed faces, so every visible face stays big enough to draw correct eyes. Frame people at MEDIUM or CLOSE range (waist-up or closer for the main person); for one_person use a clear waist-up portrait so the single face is large. "
                        "A place word is NOT automatically a crowd - a location used only as a destination/backdrop for one named person ('apne gaon ki or') = distant/empty scenery, not a populated crowd. "
                        "LOCK each person's GENDER (from name, kinship maa/beti/pita/beta, or gendered verb dekha/dekhi), AGE (baccha/nanha=child, naujawan=young, buzurg/budha/dadi=elderly) and PROFESSION attire (jawan=fatigues+rifle, police=khaki+cap, farmer=dhoti+field tools, doctor=white coat, judge=black robe); never default to a generic middle-aged male. "
                        "WHERE = a SPECIFIC setting: sub-location + time-of-day + weather/season (village/city-street/military-border/battlefield/school/courtroom/police-station/hospital-ward/market/home/temple/forest/riverbank/railway-platform/refugee-camp/rooftop/desert-road...). Match any stated time/weather (night/dawn/rain/fog/heat) in the lighting and sky, keep ALL concrete nouns the line hinges on in-frame, and make every scene's backdrop different from the others; never default to a generic living room. "
@@ -270,7 +274,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                        '"scene_kind":"<one_person | multiple_people | no_person>",'
                        '"who":"<short stable identity tag of the PRIMARY person if one_person (e.g. ravi soldier); empty otherwise>",'
                        '"look":"<if one_person: that persons locked visual age and gender and build and hair and clothing and colours and props; empty otherwise>",'
-                       '"prompt":"<one clean English 2D cartoon storyboard scene: the correct character(s) (ONE or SEVERAL, each with locked gender/age/profession look and their own expression) doing the action, in the detailed scene-matched background with every key cue visible; bold black outlines, well-proportioned, no logo and no letters anywhere>",'
+                       '"prompt":"<one clean stylised 2D cartoon storyboard scene, NOT photoreal, framed MEDIUM or CLOSE so faces are large and readable: the correct character(s) (ONE waist-up, or AT MOST 4 clearly in front with any larger crowd as soft background figures), each with locked gender/age/profession look and their own expression, doing the action in the detailed scene-matched background with every key cue visible; every person well-proportioned with a normal head, two symmetric eyes with visible pupils, one nose, one mouth, natural hands with five fingers; clean professional 2D-animation linework, bold black outlines, no distortion, no logo and no letters anywhere>",'
                        '"emotion":"<neutral/happy/hopeful/calm/uneasy/tense/sad/angry/surprise/emphatic>",'
                        '"char_voice":"<none | child | elderly_female | elderly_male | adult_male | adult_female>",'
                        '"char_line":"<if the line is clearly a character speaking, the SHORT Hindi sentence they say; otherwise empty>"}. '
@@ -312,7 +316,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         for a in range(ATTEMPTS):
             seed = (scene_seed + a * 131071) % 2_000_000
             url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(blocks[i]["prompt"]) +
-                   f"?width=1024&height=576&seed={seed}&model=flux&nologo=true&enhance=false&private=true")
+                   f"?width=1280&height=720&seed={seed}&model=flux&nologo=true&enhance=false&private=true")
             wait = 0.0
             try:
                 r = requests.get(url, timeout=120)
@@ -345,12 +349,12 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         sd = (EPISODE_SEED + i * SCENE_STEP + blocks[i].get("salt", 0)) % 2_000_000
         rnd = np.random.RandomState(sd)
         c0 = tuple(int(x) for x in rnd.randint(25, 210, 3)); c1 = tuple(int(x) for x in rnd.randint(25, 210, 3))
-        gx = (np.linspace(0, 1, 1024)[None, :] + np.linspace(0, 1, 576)[:, None]) / 2.0
-        base = np.zeros((576, 1024, 3), np.uint8)
+        gx = (np.linspace(0, 1, 1280)[None, :] + np.linspace(0, 1, 720)[:, None]) / 2.0
+        base = np.zeros((720, 1280, 3), np.uint8)
         for ch in range(3): base[..., ch] = (c0[ch] * (1 - gx) + c1[ch] * gx).astype(np.uint8)
         im = Image.fromarray(base, "RGB"); dr = ImageDraw.Draw(im)
         for _ in range(6):
-            x0, y0 = rnd.randint(0, 900), rnd.randint(0, 500)
+            x0, y0 = rnd.randint(0, 1150), rnd.randint(0, 640)
             dr.ellipse([x0, y0, x0 + rnd.randint(60, 280), y0 + rnd.randint(60, 280)],
                        fill=tuple(int(x) for x in rnd.randint(20, 235, 3)))
         im.save(os.path.join(ND, f"b{i}.jpg"), "JPEG", quality=88)
