@@ -35,6 +35,475 @@ ASSETS = Path(__file__).resolve().parent / "assets"
 HEAVY_IMPORT_HINT = ("Cartoon mode ke liye local dependencies chahiye. Install: "
                      "pip install -r requirements-cartoon-local.txt  (GPU recommended).")
 
+# ============================================================================
+# LIVING-ENVIRONMENT MOTION  (merged rain / snow-dust / fog-smoke / water-waves /
+# foliage-leaves / city-light-streaks). Pure numpy + PIL only -- NO video model,
+# NO proprietary tracking. ONE dispatcher, ONE static-buffer cache per (kind,seed).
+# Returns a 1280x720 RGB PIL.Image, or the SAME object untouched for no-op tags.
+# Called ONLY on cutaway frames; host (anchor) frames never reach it.
+# Master dial below: set 0.0 to disable everything instantly.
+# ============================================================================
+from functools import lru_cache as _lru_cache
+
+ENV_MOTION_INTENSITY = 1.0           # global 0..1 (0 = off)
+_ENVM_W, _ENVM_H = 1280, 720
+
+def _envm_kind(tag, env):
+    """(sfx tag, raw env text) -> effect name. Rain & snow MUST read raw env because
+    env_ambient() collapses rain->'water' and mountains/snow->'village'."""
+    e = (env or "").lower()
+    if any(w in e for w in ("rain", "monsoon", "storm", "downpour", "drizzle", "shower")):
+        return "rain"
+    if any(w in e for w in ("snow", "himalaya", "winter", "glacier", "kashmir",
+                            "shimla", "manali", "ladakh", "blizzard", "snowfall")):
+        return "snow"
+    t = (tag or "").lower()
+    if t == "water":                              return "water"
+    if t == "forest":                             return "foliage"
+    if t in ("temple", "workshop"):               return "fog"
+    if t == "traffic":                            return "traffic"
+    if t in ("market", "crowd"):                  return "crowd"
+    if t == "night":                              return "spark"
+    return None                                   # office/indoor/studio/village/... -> universal alive base layer only
+
+@_lru_cache(maxsize=64)
+def _envm_cache(kind, seed):
+    """Build static per-scene buffers ONCE (lru_cache keyed on (kind, seed))."""
+    import numpy as np
+    H, W = _ENVM_H, _ENVM_W
+    rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
+    C = {"kind": kind}
+    if kind in ("rain", "snow", "spark"):
+        n = {"rain": 240, "snow": 130, "spark": 150}[kind]
+        C["x0"]  = rng.uniform(-0.15 * W, 1.05 * W, n).astype(np.float32)
+        C["y0"]  = rng.uniform(0, H, n).astype(np.float32)
+        C["ph"]  = rng.uniform(0, 6.2832, n).astype(np.float32)
+        C["spd"] = rng.uniform(0.15, 1.0, n).astype(np.float32)
+        C["amp"] = rng.uniform(0.4, 1.0, n).astype(np.float32)
+        C["n"]   = n
+        if kind == "rain":
+            nf = 26                                          # foreground near-cam streaks
+            C["fx0"]  = rng.uniform(-0.20 * W, 1.10 * W, nf).astype(np.float32)
+            C["fy0"]  = rng.uniform(0, H, nf).astype(np.float32)
+            C["fsp"]  = rng.uniform(0.60, 1.0, nf).astype(np.float32)
+            C["famp"] = rng.uniform(0.70, 1.0, nf).astype(np.float32)
+            C["nf"]   = nf
+            ns = 30                                          # ground splash anchors
+            C["sx"]    = rng.uniform(0.02 * W, 0.98 * W, ns).astype(np.float32)
+            C["sy"]    = rng.uniform(0.84 * H, 0.985 * H, ns).astype(np.float32)
+            C["sph"]   = rng.uniform(0.0, 1.0, ns).astype(np.float32)
+            C["srate"] = rng.uniform(1.4, 2.4, ns).astype(np.float32)
+            C["ssz"]   = rng.uniform(3.5, 8.0, ns).astype(np.float32)
+            C["ns"]    = ns
+    elif kind == "traffic":
+        n = 26
+        C["lane"] = rng.uniform(0.62, 0.985, n).astype(np.float32)
+        C["x0"]   = rng.uniform(-0.2 * W, 1.2 * W, n).astype(np.float32)
+        C["dir"]  = np.where(rng.random(n) < 0.5, -1.0, 1.0).astype(np.float32)
+        C["spd"]  = rng.uniform(0.55, 1.0, n).astype(np.float32)
+        C["len"]  = rng.uniform(48.0, 120.0, n).astype(np.float32)
+        C["thk"]  = rng.integers(3, 8, n).astype(np.intp)
+        C["warm"] = (rng.random(n) < 0.55).astype(np.float32)
+        C["amp"]  = rng.uniform(0.55, 1.0, n).astype(np.float32)
+        C["n"]    = n
+        yb = np.arange(H, dtype=np.float32)
+        C["shear_w"] = np.clip((yb - 0.60 * H) / (0.40 * H), 0.0, 1.0).astype(np.float32) ** 1.4
+        C["shear_rows"] = np.nonzero(C["shear_w"] > 1e-3)[0]
+    elif kind == "crowd":
+        n = 40
+        C["bx"]  = rng.uniform(0.02 * W, 0.98 * W, n).astype(np.float32)
+        C["by"]  = rng.uniform(0.66 * H, 0.96 * H, n).astype(np.float32)
+        C["ph"]  = rng.uniform(0.0, 6.2832, n).astype(np.float32)
+        C["bsp"] = rng.uniform(0.7, 1.6, n).astype(np.float32)
+        C["drift"] = (np.where(rng.random(n) < 0.5, -1.0, 1.0)
+                      * rng.uniform(6.0, 16.0, n)).astype(np.float32)
+        C["rad"] = rng.uniform(7.0, 14.0, n).astype(np.float32)
+        C["dark"] = rng.uniform(0.30, 0.62, n).astype(np.float32)
+        C["n"]   = n
+        yb = np.arange(H, dtype=np.float32)
+        C["shim_w"] = np.clip((yb - 0.62 * H) / (0.38 * H), 0.0, 1.0).astype(np.float32) ** 1.3
+        C["shim_rows"] = np.nonzero(C["shim_w"] > 1e-3)[0]
+    elif kind == "fog":
+        small = rng.random((40, (2 * W) // 16)).astype(np.float32)
+        from PIL import Image, ImageFilter
+        sm = (Image.fromarray((small * 255).astype(np.uint8))
+              .resize((2 * W, H + H // 4), Image.BICUBIC)
+              .filter(ImageFilter.GaussianBlur(14)))
+        tile = np.asarray(sm, dtype=np.float32) / 255.0
+        tile = (tile - tile.min()) / (np.ptp(tile) + 1e-6)
+        C["tile"]  = np.ascontiguousarray(tile)
+        C["vgrad"] = np.linspace(0.26, 1.0, H).astype(np.float32)[:, None]
+    elif kind == "water":
+        y = np.arange(H, dtype=np.float32)
+        y0 = 0.58 * H
+        region = np.clip((y - y0) / (H - y0), 0.0, 1.0).astype(np.float32) ** 2
+        C["region"]   = region
+        C["ampv"]     = (1.6 + 5.4 * region).astype(np.float32)
+        C["rowphase"] = rng.uniform(0, 2 * np.pi, size=H).astype(np.float32)
+        C["active"]   = np.nonzero(region > 1e-3)[0]
+    elif kind == "foliage":
+        n = 7
+        C["bx"] = rng.uniform(0.04, 0.96, n).astype(np.float32) * W
+        C["by"] = rng.uniform(0.0, 1.0, n).astype(np.float32) * H
+        C["ph"] = rng.uniform(0, 6.2832, n).astype(np.float32)
+        C["sp"] = rng.uniform(0.45, 0.85, n).astype(np.float32)
+        C["sz"] = rng.integers(5, 11, n).astype(np.float32)
+        C["sw"] = rng.uniform(10.0, 26.0, n).astype(np.float32)
+        C["n"]  = n
+    return C
+
+def _envm_emo_gain(emo):
+    e = (emo or "").lower()
+    if e in ("calm", "sad", "neutral", "hopeful"):                         return 0.8
+    if e in ("tense", "fear", "angry", "anger", "surprise", "action"):     return 1.15
+    return 1.0
+
+def _envm_alive(a, t, seed, inten):
+    """UNIVERSAL 'alive' base layer for EVERY cutaway frame. Face-safe:
+    low-amplitude (<=~3px) very-low-spatial-frequency separable domain warp +
+    slow drifting brightness plane. `a` is float32 (H,W,3); returns warped copy."""
+    import numpy as np
+    H, W = a.shape[0], a.shape[1]
+    rng = np.random.default_rng(int(seed) & 0x7FFFFFFF)
+    p1, p2, p3, p4 = rng.uniform(0.0, 6.2832, 4).astype(np.float32)
+    amp = np.float32(2.6 * float(inten))
+    yy = np.arange(H, dtype=np.float32)
+    xx = np.arange(W, dtype=np.float32)
+    rowdx = amp * np.sin((2.0 * np.pi / (H / 1.4)) * yy + 0.55 * t + p1)            # (H,)
+    coldy = (0.85 * amp) * np.sin((2.0 * np.pi / (W / 1.2)) * xx + 0.38 * t + p2)   # (W,)
+    sx = np.rint(rowdx).astype(np.intp)
+    xb = np.clip(xx[None, :].astype(np.intp) - sx[:, None], 0, W - 1)               # (H,W)
+    a = a[np.arange(H)[:, None], xb, :]
+    sy = np.rint(coldy).astype(np.intp)
+    yb = np.clip(yy[:, None].astype(np.intp) - sy[None, :], 0, H - 1)               # (H,W)
+    a = a[yb, np.arange(W)[None, :], :]
+    gx = np.sin((2.0 * np.pi / (W / 0.9)) * xx + 0.21 * t + p3)                     # (W,)
+    gy = np.sin((2.0 * np.pi / (H / 0.7)) * yy + 0.17 * t + p4)                     # (H,)
+    plane = (gy[:, None] + gx[None, :]) * np.float32(1.6 * float(inten))            # (H,W)
+    a = a + plane[..., None]
+    np.clip(a, 0, 255, out=a)
+    return a
+
+def env_motion(fr, tag, tt, seed, emo="", env=""):
+    """ONE-LINE entry for the cutaway frame loop. Always returns a 1280x720 RGB PIL.Image.
+    Cannot raise on any tag/seed: unknown tag / disabled dial -> returns fr unchanged."""
+    try:
+        if ENV_MOTION_INTENSITY <= 0.001:
+            return fr
+        import numpy as np
+        from PIL import Image
+        inten = ENV_MOTION_INTENSITY * _envm_emo_gain(emo)
+        H, W = _ENVM_H, _ENVM_W
+        t = float(tt)
+        sd = int(seed) & 0x7FFFFFFF
+
+        # >>> UNIVERSAL ALIVE BASE LAYER: runs on EVERY cutaway tag (incl. office/
+        #     indoor/studio/village/unmapped). Composes UNDER the tagged effect.
+        a0 = _envm_alive(np.asarray(fr, dtype=np.float32).copy(), t, sd, inten)
+        fr = Image.fromarray(a0.astype(np.uint8), "RGB")
+
+        kind = _envm_kind(tag, env)
+        if kind is None:
+            return fr                      # no-tag scenes: alive layer alone keeps them moving
+        C = _envm_cache(kind, sd)
+
+        # --- additive particle streaks/dots: rain / snow / night-spark ---
+        if kind in ("rain", "snow", "spark"):
+            a = np.asarray(fr, dtype=np.float32)
+            x0, y0, ph, spd, amp, n = C["x0"], C["y0"], C["ph"], C["spd"], C["amp"], C["n"]
+            if kind == "rain":
+                _Y, _X, _A = [], [], []
+                def _drop(yi, xi, av):
+                    _Y.append(yi.ravel()); _X.append(xi.ravel()); _A.append(av.ravel())
+                # MAIN downpour: dense long bright slanted streaks
+                slant = 0.30
+                fall  = (700.0 + 460.0 * spd)
+                yh = np.mod(y0 + fall * t, H + 60.0) - 30.0
+                xh = np.mod(x0 - slant * fall * t, W * 1.35) - 0.18 * W
+                STEPS = 20
+                ln = 34.0 + 40.0 * amp
+                frt = np.linspace(0.0, 1.0, STEPS, dtype=np.float32)
+                ys = yh[:, None] + ln[:, None] * frt[None, :]
+                xs = xh[:, None] + (slant * ln[:, None]) * frt[None, :]
+                aa = (0.42 + 0.46 * amp)[:, None] * (0.25 + 0.75 * frt[None, :])
+                _drop(np.round(ys).astype(np.intp), np.round(xs).astype(np.intp), aa * inten)
+                # FOREGROUND depth: 26 big fast 3px-thick near-cam streaks
+                fx0, fy0, fsp, famp, nf = C["fx0"], C["fy0"], C["fsp"], C["famp"], C["nf"]
+                fslant = 0.34
+                ffall  = (1150.0 + 520.0 * fsp)
+                fyh = np.mod(fy0 + ffall * t, H + 90.0) - 45.0
+                fxh = np.mod(fx0 - fslant * ffall * t, W * 1.4) - 0.20 * W
+                FSTEPS = 26
+                fln = 70.0 + 70.0 * famp
+                ffrt = np.linspace(0.0, 1.0, FSTEPS, dtype=np.float32)
+                fys = fyh[:, None] + fln[:, None] * ffrt[None, :]
+                fxs = fxh[:, None] + (fslant * fln[:, None]) * ffrt[None, :]
+                faa = (0.55 + 0.45 * famp)[:, None] * (0.2 + 0.8 * ffrt[None, :])
+                fyi = np.round(fys).astype(np.intp); fxi = np.round(fxs).astype(np.intp)
+                fav = faa * inten
+                _drop(fyi, fxi, fav)
+                _drop(fyi, fxi - 1, 0.5 * fav)
+                _drop(fyi, fxi + 1, 0.5 * fav)
+                # SPLASHES: expanding ring/flick particles on the ground band
+                sx, sy, sph, srate, ssz = C["sx"], C["sy"], C["sph"], C["srate"], C["ssz"]
+                cyc   = t * srate + sph
+                life  = cyc - np.floor(cyc)
+                rad   = life * ssz
+                brite = (1.0 - life) ** 1.6
+                TH = 10
+                ang = np.linspace(0.0, np.pi, TH, dtype=np.float32)
+                rx = np.cos(ang)[None, :] * rad[:, None]
+                ry = -(np.sin(ang)[None, :] * rad[:, None] * 0.6)
+                _drop(np.round(sy[:, None] + ry).astype(np.intp),
+                      np.round(sx[:, None] + rx).astype(np.intp),
+                      np.repeat((brite * 0.9)[:, None], TH, axis=1) * inten)
+                _drop(np.round(sy).astype(np.intp), np.round(sx).astype(np.intp),
+                      brite * 0.7 * inten)
+                yi = np.concatenate(_Y); xi = np.concatenate(_X)
+                av = np.concatenate(_A).astype(np.float32)
+                m = (yi >= 0) & (yi < H) & (xi >= 0) & (xi < W)
+                acc = np.bincount(yi[m] * W + xi[m], weights=av[m],
+                                  minlength=H * W).astype(np.float32).reshape(H, W)
+                acc[:, 1:] += 0.55 * acc[:, :-1]
+                tint = np.array([200, 216, 240], np.float32)
+            elif kind == "snow":
+                yy = np.mod(y0 + (40.0 + 60.0 * spd) * t, H + 20.0) - 10.0
+                xx = np.mod(x0 + 26.0 * np.sin(t * 0.5 + ph), W).astype(np.float32)
+                yi = np.round(yy).astype(np.intp); xi = np.round(xx).astype(np.intp)
+                av = (0.5 + 0.5 * amp) * 0.9 * inten
+                m = (yi >= 0) & (yi < H) & (xi >= 0) & (xi < W)
+                acc = np.bincount(yi[m] * W + xi[m], weights=av[m],
+                                  minlength=H * W).astype(np.float32).reshape(H, W)
+                acc[1:, :] += 0.5 * acc[:-1, :]; acc[:, 1:] += 0.5 * acc[:, :-1]
+                tint = np.array([255, 255, 255], np.float32)
+            elif kind == "spark":
+                yy = np.mod(y0 + (3.0 * spd) * t, H)
+                xx = np.mod(x0 + 5.0 * np.sin(t * 0.55 + ph), W)
+                tw = (0.5 + 0.5 * np.sin(t * 2.3 + ph * 3.0)) * amp
+                yi = np.round(yy).astype(np.intp); xi = np.round(xx).astype(np.intp)
+                av = tw * 0.75 * inten
+                m = (yi >= 0) & (yi < H) & (xi >= 0) & (xi < W)
+                acc = np.bincount(yi[m] * W + xi[m], weights=av[m],
+                                  minlength=H * W).astype(np.float32).reshape(H, W)
+                acc[1:, :] += 0.5 * acc[:-1, :]; acc[:, 1:] += 0.5 * acc[:, :-1]   # 2px soft glow
+                tint = np.array([205, 222, 255], np.float32)
+            np.clip(acc, 0.0, 1.0, out=acc)
+            a += acc[..., None] * tint[None, None, :]
+            np.clip(a, 0, 255, out=a)
+            return Image.fromarray(a.astype(np.uint8), "RGB")
+
+        # --- fog/smoke drifting low-opacity tint (temple/workshop) ---
+        if kind == "fog":
+            tile, vgrad = C["tile"], C["vgrad"]
+            Ht = tile.shape[0]
+            vslack = Ht - H
+            hslack = tile.shape[1] - W
+            rising = (tag or "").lower() in ("temple", "workshop")
+            axf = (t / 13.0) % 1.0
+            ayf = ((-t / 17.0) % 1.0) if rising else ((t / 22.0) % 1.0)
+            ox = int(axf * hslack); oy = int(ayf * vslack)
+            A = tile[oy:oy + H, ox:ox + W]
+            bxf = (-t / 7.0) % 1.0
+            byf = (t / 9.5) % 1.0
+            bx = int(bxf * hslack); by = int(byf * vslack)
+            B = tile[by:by + H, bx:bx + W]
+            m = np.float32(0.5) + np.float32(0.5) * np.sin(np.float32(2.0 * np.pi * 0.09) * t)
+            dens = A + B + (np.float32(1.7) * m) * (A * B)
+            dens -= np.float32(0.5)
+            np.clip(dens, 0.0, 1.0, out=dens)
+            al = ((dens * vgrad) * np.float32(0.34 * inten))[..., None]
+            arr = np.asarray(fr, dtype=np.float32)
+            arr += (np.float32([224, 228, 234]) - arr) * al
+            np.clip(arr, 0, 255, out=arr)
+            return Image.fromarray(arr.astype(np.uint8), "RGB")
+
+        # --- water: per-row horizontal ripple in lower band + drifting glint ---
+        if kind == "water":
+            arr = np.asarray(fr, dtype=np.uint8)
+            out = arr.copy()
+            region, ampv, rowphase, active = C["region"], C["ampv"], C["rowphase"], C["active"]
+            yidx = np.arange(H, dtype=np.float32)
+            k1 = np.float32(2.0 * np.pi / 150.0); k2 = np.float32(2.0 * np.pi / 47.0); k3 = np.float32(2.0 * np.pi / 23.0)
+            w1 = np.float32(2.0 * np.pi * 0.18);  w2 = np.float32(2.0 * np.pi * 0.42);  w3 = np.float32(2.0 * np.pi * 0.66)
+            AMP = np.float32(2.1)
+            bob = np.float32(1.7) * np.sin(np.float32(2.0 * np.pi * 0.09) * t)
+            disp = ((AMP * ampv * np.sin(k1 * yidx - w1 * t + rowphase)
+                     + np.float32(0.55) * AMP * ampv * np.sin(k2 * yidx - w2 * t)
+                     + np.float32(0.30) * AMP * ampv * np.sin(k3 * yidx - w3 * t + rowphase * np.float32(1.7))
+                     + bob) * inten).astype(np.int32)
+            ax = np.arange(W)
+            for yy in active:
+                d = int(disp[yy])
+                if d:
+                    shifted = arr[yy][(ax - d) % W]
+                    w = region[yy]
+                    out[yy] = (arr[yy].astype(np.float32) * (1.0 - w)
+                               + shifted.astype(np.float32) * w).astype(np.uint8)
+            bc1 = (0.66 + 0.20 * np.sin(np.float32(2.0 * np.pi * 0.05) * t)) * H
+            bc2 = (0.86 + 0.10 * np.sin(np.float32(2.0 * np.pi * 0.08) * t + 1.7)) * H
+            g1 = np.exp(-((yidx - bc1) ** 2) / (2.0 * 38.0 * 38.0))
+            g2 = np.exp(-((yidx - bc2) ** 2) / (2.0 * 26.0 * 26.0))
+            glint = (g1 + 0.7 * g2) * region
+            add = (glint[:, None, None] * np.float32(34.0 * inten))
+            outf = np.clip(out.astype(np.float32) + add, 0, 255)
+            return Image.fromarray(outf.astype(np.uint8), "RGB")
+
+        # --- foliage: strong canopy sway + flag/cloth ripple + fluttering leaves ---
+        if kind == "foliage":
+            arr = np.asarray(fr, dtype=np.uint8)
+            yidx = np.arange(H, dtype=np.float32)
+            ax   = np.arange(W)
+            # (1) eased multi-harmonic canopy sway (upper band only)
+            top_h  = 0.58 * H
+            canopy = np.clip((top_h - yidx) / top_h, 0.0, 1.0)
+            canopy = canopy * canopy * (3.0 - 2.0 * canopy)
+            sway = ( np.sin(2.0 * np.pi * 0.11 * t)
+                     + 0.45 * np.sin(2.0 * np.pi * 0.27 * t + yidx * 0.018)
+                     + 0.25 * np.sin(2.0 * np.pi * 0.43 * t + 1.7) )
+            AMP_TOP = 26.0
+            swi = (sway * AMP_TOP * inten * canopy).astype(np.int32)
+            out = arr.copy()
+            for yy in np.nonzero(canopy > 1e-3)[0]:
+                s = int(swi[yy])
+                if s:
+                    out[yy] = arr[yy][(ax - s) % W]
+            # (2) localized flag/cloth ripple (narrow strips, deterministic per seed)
+            srng = np.random.default_rng((sd) ^ 0x5EED)
+            cx     = srng.uniform(0.12, 0.88, 3).astype(np.float32) * W
+            cwid   = srng.uniform(34.0, 70.0, 3).astype(np.float32)
+            cph    = srng.uniform(0.0, 6.2832, 3).astype(np.float32)
+            cspeed = srng.uniform(0.55, 0.95, 3).astype(np.float32)
+            ytop   = srng.uniform(0.05, 0.22, 3).astype(np.float32) * H
+            yhgt   = srng.uniform(0.20, 0.40, 3).astype(np.float32) * H
+            FLAG_AMP = 14.0
+            after = out.copy()
+            for kf in range(3):
+                yc = ytop[kf] + 0.5 * yhgt[kf]
+                vy = np.exp(-((yidx - yc) ** 2) / (2.0 * (0.6 * yhgt[kf]) ** 2))
+                vy = vy * np.clip((0.66 * H - yidx) / (0.66 * H), 0.0, 1.0)
+                cm = np.exp(-((ax - cx[kf]) ** 2) / (2.0 * cwid[kf] ** 2)).astype(np.float32)
+                rr = np.nonzero(vy > 0.04)[0]
+                if rr.size == 0:
+                    continue
+                for yy in rr:
+                    phase = (2.0 * np.pi * cspeed[kf] * t + cph[kf] + yidx[yy] * 0.05)
+                    d = FLAG_AMP * np.sin(phase) * vy[yy] * inten
+                    if abs(d) < 0.5:
+                        continue
+                    di = int(round(d))
+                    shifted = out[yy][(ax - di) % W]
+                    w = cm * vy[yy]
+                    after[yy] = (out[yy].astype(np.float32) * (1.0 - w[:, None])
+                                 + shifted.astype(np.float32) * w[:, None]).astype(np.uint8)
+            out = after
+            # (3) drifting/fluttering leaf particles (7 anchors x4 tiled)
+            a = out.astype(np.float32)
+            bx, by, ph, sp, sz, sw, n = C["bx"], C["by"], C["ph"], C["sp"], C["sz"], C["sw"], C["n"]
+            reps = 4
+            tile_dx = srng.uniform(0, W, reps).astype(np.float32)
+            tile_dp = srng.uniform(0, 6.2832, reps).astype(np.float32)
+            bx_t = (np.add.outer(tile_dx, bx) % W).ravel()
+            by_t = np.tile(by, reps)
+            ph_t = (np.add.outer(tile_dp, ph)).ravel()
+            sp_t = np.tile(sp, reps)
+            sw_t = np.tile(sw, reps) * 1.6
+            y = np.mod(by_t + sp_t * t * 46.0, H + 40.0) - 20.0
+            x = bx_t + sw_t * np.sin(2.0 * np.pi * 0.33 * t + ph_t) \
+                     + 8.0 * np.sin(2.0 * np.pi * 0.9 * t + ph_t * 2.0)
+            twinkle = 0.55 + 0.45 * np.sin(2.0 * np.pi * 0.7 * t + ph_t * 3.0)
+            acc = np.zeros((H, W), np.float32)
+            yi = np.round(y).astype(np.intp); xi = np.round(x).astype(np.intp)
+            m = (yi >= 1) & (yi < H - 1) & (xi >= 1) & (xi < W - 1)
+            np.add.at(acc, (yi[m], xi[m]), (0.85 * inten) * twinkle[m])
+            acc[1:, :] += 0.7 * acc[:-1, :]; acc[:-1, :] += 0.7 * acc[1:, :]
+            acc[:, 1:] += 0.7 * acc[:, :-1]; acc[:, :-1] += 0.7 * acc[:, 1:]
+            np.clip(acc, 0.0, 1.0, out=acc)
+            a += acc[..., None] * np.array([126, 158, 74], np.float32)[None, None, :]
+            np.clip(a, 0, 255, out=a)
+            return Image.fromarray(a.astype(np.uint8), "RGB")
+
+        # --- traffic: bidirectional light/vehicle streaks + lower-band shear ---
+        if kind == "traffic":
+            a = np.asarray(fr, dtype=np.float32)
+            lane, x0, dr, spd, ln, thk = C["lane"], C["x0"], C["dir"], C["spd"], C["len"], C["thk"]
+            warm, amp, n = C["warm"], C["amp"], C["n"]
+            yc = (lane * H)
+            base = (210.0 + 250.0 * spd)
+            xh = np.mod(x0 + dr * base * t, W + 2.0 * ln.max()) - ln.max()
+            STEPS = 30
+            frt = np.linspace(0.0, 1.0, STEPS, dtype=np.float32)
+            xs = xh[:, None] + (dr * ln)[:, None] * (frt[None, :] - 1.0)
+            taper = (0.25 + 0.75 * frt[None, :])
+            acc = np.zeros((H, W), np.float32); accW = np.zeros((H, W), np.float32)
+            for j in range(n):
+                xi = np.round(xs[j]).astype(np.intp)
+                vis = (xi >= 0) & (xi < W)
+                if not vis.any():
+                    continue
+                xi = xi[vis]; bw = (taper[0][vis] * amp[j]).astype(np.float32)
+                tk = int(thk[j])
+                for dy in range(-tk, tk + 1):
+                    yy = int(round(yc[j])) + dy
+                    if 0 <= yy < H:
+                        rowg = (1.0 - abs(dy) / (tk + 1.0))
+                        np.add.at(acc[yy], xi, bw * rowg)
+                        if warm[j] > 0.5:
+                            accW[yy][xi] += bw * rowg
+            acc *= (0.5 * inten)
+            np.clip(acc, 0.0, 1.4, out=acc)
+            warm_tint = np.array([255, 210, 130], np.float32)
+            cool_tint = np.array([150, 180, 230], np.float32)
+            wmask = (accW > 1e-4).astype(np.float32)[..., None]
+            tint = cool_tint[None, None, :] * (1.0 - wmask) + warm_tint[None, None, :] * wmask
+            a += acc[..., None] * tint
+            sw = C["shear_w"]; rows = C["shear_rows"]
+            sh = (np.sin(2.0 * np.pi * 0.18 * t) * 9.0 * inten) * sw
+            shi = np.round(sh).astype(np.intp)
+            ax = np.arange(W)
+            for yy in rows:
+                d = int(shi[yy])
+                if d:
+                    a[yy] = a[yy][(ax - d) % W]
+            np.clip(a, 0, 255, out=a)
+            return Image.fromarray(a.astype(np.uint8), "RGB")
+
+        # --- crowd/market: bobbing drifting silhouette blobs + lower shimmer ---
+        if kind == "crowd":
+            a = np.asarray(fr, dtype=np.float32)
+            bx, by, ph, bsp = C["bx"], C["by"], C["ph"], C["bsp"]
+            drift, rad, dark, n = C["drift"], C["rad"], C["dark"], C["n"]
+            cx = np.mod(bx + drift * t + 10.0 * np.sin(0.7 * t + ph), W)
+            cy = by + (4.0 + 3.0 * bsp) * np.sin(2.0 * np.pi * 0.55 * bsp * t + ph)
+            shade = np.zeros((H, W), np.float32)
+            for j in range(n):
+                r = float(rad[j]); cxj = float(cx[j]); cyj = float(cy[j])
+                x0i = max(0, int(cxj - r)); x1i = min(W, int(cxj + r + 1))
+                y0i = max(0, int(cyj - r)); y1i = min(H, int(cyj + r + 1))
+                if x0i >= x1i or y0i >= y1i:
+                    continue
+                xs = np.arange(x0i, x1i, dtype=np.float32) - cxj
+                ys = np.arange(y0i, y1i, dtype=np.float32) - cyj
+                g = np.exp(-((xs[None, :] ** 2) / (r * r) + (ys[:, None] ** 2) / (1.5 * r * r)))
+                np.maximum(shade[y0i:y1i, x0i:x1i], g * dark[j], out=shade[y0i:y1i, x0i:x1i])
+            shade *= (0.85 * inten)
+            np.clip(shade, 0.0, 0.7, out=shade)
+            a *= (1.0 - shade[..., None])
+            sw = C["shim_w"]
+            sh = (0.06 * inten) * (0.5 + 0.5 * np.sin(2.0 * np.pi * 0.4 * t)) * sw
+            a += sh[:, None, None] * np.array([255, 200, 150], np.float32)[None, None, :]
+            rows = C["shim_rows"]; ax = np.arange(W)
+            shr = np.round(np.sin(2.0 * np.pi * 0.3 * t) * 4.0 * inten * sw).astype(np.intp)
+            for yy in rows:
+                d = int(shr[yy])
+                if d:
+                    a[yy] = a[yy][(ax - d) % W]
+            np.clip(a, 0, 255, out=a)
+            return Image.fromarray(a.astype(np.uint8), "RGB")
+
+        return fr
+    except Exception:
+        return fr     # never let an env overlay crash a render
+
 
 def _av_stub():
     """faster-whisper imports PyAV; on some Windows boxes the av DLL is blocked. Stub it so the
@@ -155,10 +624,11 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     CART = (", clean flat 2D cartoon storybook illustration in ONE consistent cel-shaded art style and colour palette across the whole video, stylised NOT photoreal, NOT 3D, "
             "bold even black outlines, simple flat colour fills with soft cel shading, "
             "correct human anatomy with natural body proportions and a normal-sized head, each face drawn clearly with two symmetric eyes that each have a visible round pupil and iris, one nose, one mouth, natural hands with five fingers, "
-            "FEW large clearly-drawn characters framed medium or close so every face is large and readable, never a crowd of tiny faces, "
+            "ENVIRONMENT-FIRST composition: the LOCATION, setting and action fill most of the frame (about 70 percent) with a rich detailed background - depth, sky, weather, light and atmosphere - and any characters are SMALLER figures placed naturally INSIDE that world (about 30 percent), part of the scene and never filling the screen; prefer a WIDE or medium establishing shot of the place and do NOT default to a centred portrait, a posed group photo or a head-and-shoulders close-up unless the line is truly about one person's face, "
+            "when a character is small or distant render them as a clean simplified silhouette-style figure with a plain readable face or no facial detail at all, NOT a shrunken detailed face, and never a crowd of tiny detailed faces - this keeps small figures from melting or going googly-eyed; for a lone, quietly-watching or contemplative subject who is NOT speaking, prefer showing that ONE figure FROM BEHIND or in three-quarter back view (back to camera) so no face can distort, and add NO extra uninvited bystanders and NO random wires, cables, ropes or rigging cluttering the sky beyond what the line actually names, "
             "characters and the background sharp and clearly separated, NOT blurry, no soft focus, no sketch lines, no crosshatch, no pencil shading, "
             "borderless full-bleed picture, completely plain unbranded artwork, no channel logo, no studio logo, no signage, no letters or words anywhere in the frame, "
-            "clean professional 2D animation. Avoid: distorted or melted face, asymmetric or pupil-less or googly eyes, malformed hands, extra or fused fingers, stretched head, mutated anatomy")
+            "clean professional 2D animation. Avoid: distorted or melted face, asymmetric or pupil-less or googly eyes, malformed hands, extra or fused fingers, stretched head, mutated anatomy, a giant character covering the whole frame, an empty plain background, a flat posed group-photo line-up, extra uninvited bystanders the line never mentioned, a busy crowd for a line about one person, random wires or cables cluttering the sky")
 
     def run(a, **k): return subprocess.run(a, capture_output=True, **k)
     def runtext(a, **k):
@@ -203,10 +673,24 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
     while t < TOTAL - 0.4:
         e = min(t + BLOCK, TOTAL); blocks.append({"i": len(blocks), "a": t, "b": e, "hi": text_in(t, e)}); t = e
     TOTAL = blocks[-1]["b"]; NB = len(blocks); NF = int(TOTAL * FPS)
+    # Each block's DIRECTOR text defaults to the audio transcript (bk["hi"]). If the user pasted
+    # the clean story SCRIPT, the director instead reads that text (scene/character/environment/
+    # weather come from the TEXT); audio still drives timing, captions and lip-sync.
+    for bk in blocks: bk["dir"] = bk["hi"]
+    _script = (transcript or "").strip()
+    if _script:
+        _sents = [s.strip() for s in re.split(r"(?<=[।.?!])\s+|[\n\r]+", _script) if s.strip()]
+        if _sents:
+            _tot = float(sum(len(s) for s in _sents)) or 1.0; _cum = 0.0
+            _buck = [[] for _ in blocks]
+            for s in _sents:
+                bi = min(NB - 1, int(((_cum + len(s) * 0.5) / _tot) * NB)); _buck[bi].append(s); _cum += len(s)
+            for i, bk in enumerate(blocks):
+                if _buck[i]: bk["dir"] = " ".join(_buck[i])
 
     # ---------- character bible (consistency without agents) ----------
     prog(16, "Kahani ke characters samajhe ja rahe hain...")
-    full = " ".join(s["text"] for s in segs)[:1600]
+    full = ((transcript or "").strip()[:2000] or " ".join(s["text"] for s in segs)[:1600])   # pasted text script (if any) drives scene understanding; audio still drives timing/captions/lip-sync
     # P1: hash the DECODED audio PCM (so different stories diverge) + a per-render token (so re-runs differ).
     _audio_sig = hashlib.sha256(np.ascontiguousarray(audio16).tobytes()).hexdigest()[:16]
     _run_salt = f"{output_path}|{time.time_ns()}|{os.getpid()}"
@@ -216,6 +700,30 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                    "Transcript: " + (topic + ". " + full if topic else full))[:500]
     # loose cast hint for the scene director (NOT a forced single hero)
     CAST = " ".join(bible.split())[:320] or "scene-appropriate characters"
+
+    # ---------- whole-story visual world (computed ONCE, before the per-line loop) ----------
+    # Understand the WHOLE story first, THEN fix the world so every scene's location/era/
+    # weather stays consistent with the overall arc (cheap: one extra text call per episode).
+    STORY = _pjson(
+        "Read this WHOLE Hindi story ONCE, then summarise its overall VISUAL WORLD so a "
+        "storyboard director keeps every scene's location, era and weather consistent. "
+        "Reply with ONLY this JSON: "
+        '{"places":"<2-4 main physical locations the story actually happens in, comma list>",'
+        '"era":"<modern day | a specific past period | timeless village - one short phrase>",'
+        '"region":"<broad setting e.g. rural north-india village, indian metro city, himalayan border>",'
+        '"weather":"<dominant weather/season/time-of-day the narration supports e.g. monsoon rain, dry summer afternoon, cold foggy night>",'
+        '"mood":"<one or two words for the overall emotional tone>",'
+        '"motifs":"<3-6 recurring environmental things to keep showing e.g. wet roads, tea stall, paddy fields, army trucks>"}. '
+        "Story: " + (topic + ". " + full if topic else full)
+    )
+    _sp = lambda k, d: " ".join(str(STORY.get(k, "") or "").split())[:120] or d
+    STORY_REGION  = _sp("region",  "India")
+    STORY_WEATHER = _sp("weather", "natural daytime weather")
+    STORY_WORLD = (f"WHOLE-STORY WORLD (decided from the entire narration; keep every scene consistent with this): "
+                   f"region={STORY_REGION}; era={_sp('era','modern day')}; main locations={_sp('places','the storys main locations')}; "
+                   f"dominant weather/season={STORY_WEATHER}; overall mood={_sp('mood','')}; recurring motifs={_sp('motifs','')}. "
+                   f"This scene must sit in one of those locations (or a believable spot in the same world), and its sky/light/weather "
+                   f"must fit the dominant weather unless THIS line explicitly says otherwise. ")
 
     # ---------- narration audio + envelope + pitch ----------
     NARR = os.path.join(ND, "narr.m4a"); WAVA = os.path.join(ND, "narr.wav")
@@ -256,31 +764,30 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
             _known = "; ".join(f"{kk} -> {CHAR_LEDGER[kk]}" for kk in LEDGER_ORDER[-6:]) or "none yet"
             _ctx = (f"CONTINUITY MEMORY (reuse these EXACT looks, do NOT redesign an already-shown person): {_known}. "
                     f"Previous scene was: {prev_recap or 'none'}. ")
-            j = _pjson(f"You are the STORYBOARD director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. People who may appear: {bible}. " + _ctx +
-                       "Decide WHO + WHERE + EMOTION for THIS line, then describe it. "
-                       "WHO (read the sentence's subject FIRST): a single explicit subject (a named person, first-person 'main', or an aloneness cue 'akela/sunsaan/deserted') = EXACTLY ONE person, no extra bystanders. "
-                       "Otherwise draw EVERY party the line names or implies: Hindi PLURALS (verb endings -gaye/-ruke/-aaye/-rahe the, words log/sab/logon, group nouns) and any number (do/teen/paanch/kai/bheed) MUST become MULTIPLE distinct people (about that many, cap 7) - collapsing a plural to one person is WRONG. "
-                       "Soldiers/jawans/squad/patrol/troops/border-guards = MULTIPLE soldiers; a named officer or hero still appears WITH his men/team/family/crowd whenever the line places them together. "
-                       "When several people appear, draw AT MOST 4 of them clearly and large in the foreground and render any larger group as soft simplified out-of-focus background figures, NEVER many tiny detailed faces, so every visible face stays big enough to draw correct eyes. Frame people at MEDIUM or CLOSE range (waist-up or closer for the main person); for one_person use a clear waist-up portrait so the single face is large. "
-                       "A place word is NOT automatically a crowd - a location used only as a destination/backdrop for one named person ('apne gaon ki or') = distant/empty scenery, not a populated crowd. "
-                       "LOCK each person's GENDER (from name, kinship maa/beti/pita/beta, or gendered verb dekha/dekhi), AGE (baccha/nanha=child, naujawan=young, buzurg/budha/dadi=elderly) and PROFESSION attire (jawan=fatigues+rifle, police=khaki+cap, farmer=dhoti+field tools, doctor=white coat, judge=black robe); never default to a generic middle-aged male. "
-                       "WHERE = a SPECIFIC setting: sub-location + time-of-day + weather/season (village/city-street/military-border/battlefield/school/courtroom/police-station/hospital-ward/market/home/temple/forest/riverbank/railway-platform/refugee-camp/rooftop/desert-road...). Match any stated time/weather (night/dawn/rain/fog/heat) in the lighting and sky, keep ALL concrete nouns the line hinges on in-frame, and make every scene's backdrop different from the others; never default to a generic living room. "
-                       "An unseen/ambiguous subject ('something moved', 'a shadow', 'koi aahat') stays SUGGESTED (silhouette/shadow/off-frame), not a clear person. A line about scenery, a number, or an abstract idea with NO human = a NO-PERSON scene (landscape/object/symbol, e.g. hope=a lit diya in darkness), no decorative filler person. "
-                       "EMOTION = the emotional CORE of the key event (a lost child in a busy bazaar is tense/sad, not happy); if the line turns (despair->hope) use the RESOLVING end-state and keep both cues visible; in a multi-person scene give EACH person their own correct expression. "
-                       "For consecutive lines about the SAME person, hold their gender/age/build/clothing constant; only scene, action and emotion change. "
+            j = _pjson(f"You are an ENVIRONMENT-FIRST STORYBOARD director for a Hindi story. Topic: {topic or 'Hindi kahaniya'}. People who may appear: {bible}. " + STORY_WORLD + _ctx +
+                       "First understand the WHOLE story (the world above); THEN build THIS line as a PLACE, not a portrait. ORDER OF THINKING: (1) WHERE is it happening - pick a SPECIFIC location; (2) WHAT action/event happens there; (3) build a RICH living environment for it; (4) ONLY THEN place any characters NATURALLY inside it, SMALL. "
+                       "FRAMING RULE: default to a WIDE / ESTABLISHING shot that clearly shows the location, with the environment filling about 70 percent of the frame and any people about 30 percent (small, part of the scene, NOT filling the screen, NOT centred portraits, NOT a posed group photo). Use a closer MEDIUM (waist-up) shot ONLY for a single genuine emotional or dialogue beat; never default to close-ups. Characters are PART of the scene, never the whole scene. "
+                       "DEFAULT TO no_person: if the line is about a place, the weather, time passing, an object, an event, a mood, a journey, prices or an idea - anything NOT a specific person acting/speaking/feeling right now - choose scene_kind=no_person and draw a PURE LOCATION / OBJECT / ESTABLISHING shot (no people, or tiny incidental distant figures only). It is GOOD for roughly half the scenes to be no_person establishing shots; do NOT add a decorative person just to fill the frame. "
+                       "WHO (only after the place is set, and only when the line is genuinely about a person): a single explicit subject (a named person, first-person 'main', or an aloneness cue 'akela/sunsaan/deserted') = EXACTLY ONE small person inside the wide scene, no extra bystanders; for such a lone subject when they are NOT speaking (a quiet watching/thinking/standing beat or 'akela/alone'), prefer framing that one person FROM BEHIND or in three-quarter back view, small-to-medium, looking into the scene - it reads cinematic and avoids any face distortion, and keep the frame clean with no random wires or clutter (if the character is actually speaking, keep them facing forward instead). Hindi PLURALS (verb endings -gaye/-ruke/-aaye/-rahe the, words log/sab/logon, group nouns) and any number (do/teen/paanch/kai/bheed) = MULTIPLE distinct people scattered NATURALLY through the environment (about that many, cap 7); soldiers/jawans/squad/patrol/troops = several soldiers spread across the location; a named officer or hero still appears WITH his men/team/family inside the wide scene. A place word used only as a destination/backdrop for one named person ('apne gaon ki or') = distant/near-empty scenery, not a crowd. NEVER render 'a group of people standing in a room' unless the narration literally describes a meeting/gathering. "
+                       "When people ARE present keep them SMALL and well-spaced; draw AT MOST 4 figures readably and render any larger group as soft simplified distant background figures - NEVER many tiny detailed faces. Even small, draw each visible face cleanly: a normal-sized head, two symmetric eyes each with a round pupil, one nose, one mouth, natural hands with five fingers - no distortion. "
+                       "LOCK each person's GENDER (name, kinship maa/beti/pita/beta, or gendered verb dekha/dekhi), AGE (baccha/nanha=child, naujawan=young, buzurg/budha/dadi=elderly) and PROFESSION attire (jawan=fatigues+rifle, police=khaki+cap, farmer=dhoti+field tools, doctor=white coat, judge=black robe); never default to a generic middle-aged male. "
+                       "WHERE = a SPECIFIC setting: sub-location + time-of-day + weather/season. Match any stated time/weather (night/dawn/rain/fog/heat) in the lighting and sky, keep ALL concrete nouns the line hinges on in-frame, give every location its own detail/motion/atmosphere, and make every scene's backdrop different; never default to a generic living room. LOCATION DETAIL (once you pick the setting, fill 'environment' and the scene with its signature props/weather; put the CAPS keyword into 'environment' so the matching ambience fires): RAIN/MONSOON -> grey clouds, slanting rain, wet shining roads, puddles, dripping rooftops, soaked swaying trees; WIDE. VILLAGE/FIELD/FARM -> mud-thatch huts, green or golden fields, a well, cattle, a banyan tree, dawn/dusk haze; WIDE. MARKET/BAZAAR -> rows of stalls, hanging goods, produce baskets, hand-carts, a stream of customers; MEDIUM-WIDE. BORDER/military -> a fenced border post, sandbag bunkers, jeeps, a flag, a watchtower, patrolling soldiers as small figures; WIDE. TEMPLE/MANDIR -> carved stone spire, an idol, oil lamps, marigold garlands, incense smoke, devotees; WIDE-to-MEDIUM. FOREST/JUNGLE -> dense trees, light shafts, undergrowth, a winding trail, mist; WIDE. CITY STREET/ROAD -> tall buildings, moving traffic and auto-rickshaws, streetlights and wires, pavements with pedestrians (no readable text); WIDE. RIVER/WATER -> flowing water with reflections, a ghat or bridge, boats, reeds; WIDE. SCHOOL/CLASS -> classroom or playground, blackboard/desks or a courtyard, children in uniform, a flagpole; MEDIUM-WIDE. COURTROOM -> tall judge's bench, witness stand, benches, law books; MEDIUM-WIDE. HOME/ROOM (ONLY when truly indoors) -> a specific lived-in room with furniture, a window with light, warm lamp glow; MEDIUM, do NOT default here for outdoor lines. Add NIGHT for a dark blue sky, moon, lit windows, long shadows. For any other setting give 4-6 concrete signature props plus a weather/time cue and keep small figures inside a wide living world. "
+                       "An unseen/ambiguous subject ('something moved', 'a shadow', 'koi aahat') stays SUGGESTED (silhouette/shadow/off-frame), not a clear person. For no_person / explanatory lines pick a B-ROLL establishing shot echoing the subject: army/border/war -> a guarded border post, tanks, a wide patrol shot (no single hero); rain/storm/monsoon -> heavy clouds, rain on empty streets, rising water; city/economy/market/prices -> traffic and a skyline, a busy market, rupee notes; village/farm/harvest -> open fields, crops, a lone hut at the right time-of-day; hope -> a lit diya in darkness. A clean wide or medium establishing frame of the place or object, not a posed person. "
+                       "EMOTION = the emotional CORE of the key event, carried by BOTH the environment (light/weather/colour/atmosphere) AND any small figures (a lost child in a busy bazaar is tense/sad, not happy); if the line turns (despair->hope) use the RESOLVING end-state and keep both cues visible; give each visible person their own correct expression. "
+                       "For consecutive lines about the SAME person, hold their gender/age/build/clothing constant; only the location, action and emotion change. "
                        "If a person here is ALREADY in CONTINUITY MEMORY, REUSE that person's exact gender/age/build/clothing/colours verbatim; only their action, the scene and emotion may change. "
                        "Reply with ONLY a JSON object: "
                        '{"environment":"<specific setting + time-of-day + weather for THIS line>",'
                        '"scene_kind":"<one_person | multiple_people | no_person>",'
                        '"who":"<short stable identity tag of the PRIMARY person if one_person (e.g. ravi soldier); empty otherwise>",'
                        '"look":"<if one_person: that persons locked visual age and gender and build and hair and clothing and colours and props; empty otherwise>",'
-                       '"prompt":"<one clean stylised 2D cartoon storyboard scene, NOT photoreal, framed MEDIUM or CLOSE so faces are large and readable: the correct character(s) (ONE waist-up, or AT MOST 4 clearly in front with any larger crowd as soft background figures), each with locked gender/age/profession look and their own expression, doing the action in the detailed scene-matched background with every key cue visible; every person well-proportioned with a normal head, two symmetric eyes with visible pupils, one nose, one mouth, natural hands with five fingers; clean professional 2D-animation linework, bold black outlines, no distortion, no logo and no letters anywhere>",'
+                       '"prompt":"<one clean stylised 2D cartoon storyboard scene, NOT photoreal, built ENVIRONMENT-FIRST and mostly WIDE: OPEN by describing the LOCATION and its signature props, weather and atmosphere (the rich background fills about 70 percent of the frame), THEN place any small-to-medium character(s) naturally inside it (at most 4 readable, any extra as soft distant background figures; for no_person draw no people or only tiny distant figures; a closer waist-up ONLY for a single intimate emotional/dialogue beat) - never a centred portrait and never a posed group photo unless the line is a meeting; each visible person keeps locked gender/age/profession look and their own expression, well-proportioned with a normal-sized head, two symmetric eyes with visible pupils, one nose, one mouth, natural hands with five fingers, small/distant figures drawn as clean simplified shapes not shrunken detailed faces; for a lone non-speaking subject prefer a from-behind or over-the-shoulder back view and add no uninvited bystanders or random wire/cable clutter; clean professional 2D-animation linework, bold black outlines, no distortion, no logo and no letters anywhere>",'
                        '"emotion":"<neutral/happy/hopeful/calm/uneasy/tense/sad/angry/surprise/emphatic>",'
                        '"char_voice":"<none | child | elderly_female | elderly_male | adult_male | adult_female>",'
                        '"char_line":"<if the line is clearly a character speaking, the SHORT Hindi sentence they say; otherwise empty>"}. '
                        'Use char_voice for a person ONLY when the narration is clearly that character speaking; otherwise "none" and empty char_line. '
-                       f'Narration line: {bk["hi"]}')
-            bk["env"] = j.get("environment", "home")
+                       f'Narration line: {bk["dir"]}')
+            bk["env"] = j.get("environment") or (STORY_REGION + ", " + STORY_WEATHER)   # director hiccup -> stay in the story's world, never a generic room
             sk = (j.get("scene_kind") or "").strip().lower()
             bk["scene_kind"] = sk if sk in ("one_person", "multiple_people", "no_person") else ""
             who = _ckey(j.get("who")); look = " ".join((j.get("look") or "").split())[:240]
@@ -290,16 +797,19 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
                 elif look: CHAR_LEDGER[bk["ckey"]] = look
                 if bk["ckey"] in LEDGER_ORDER: LEDGER_ORDER.remove(bk["ckey"])
                 LEDGER_ORDER.append(bk["ckey"])
-            _scene = (j.get("prompt") or ("a 2D cartoon scene of " + bk["hi"][:60]))
+            _scene = (j.get("prompt") or ("a wide establishing environment-first 2D cartoon shot set in " + STORY_REGION +
+                      " during " + STORY_WEATHER + ", the rich location and weather fill the frame, only small distant figures if any, depicting: " + bk["dir"][:70]))
             if bk["ckey"] and look: _scene = _scene + ". The SAME recurring person, consistent design: " + look
             bk["prompt"] = (_scene + ", set in a detailed " + str(bk["env"]) +
-                            " environment - a distinct background matching THIS scene, cast context: " + CAST + CART)
+                            " environment - a distinct background matching THIS scene, consistent with the story world (" +
+                            STORY_REGION + ", " + STORY_WEATHER + "), the environment fills most of the frame with rich "
+                            "location detail and atmosphere, cast context: " + CAST + CART)
             bk["sfx"] = env_ambient(bk["env"]); bk["emo"] = j.get("emotion", "neutral"); bk["emoI"] = 0.6
             bk["mus"] = _emo_music(bk["emo"], bk["mus"])
             cv = (j.get("char_voice") or "none").strip(); cl = (j.get("char_line") or "").strip()
             bk["cvoice"] = cv if (cv != "none" and len(cl) >= 3) else "none"; bk["cline"] = cl if bk["cvoice"] != "none" else ""
             _whotxt = (look or ("several people" if bk["scene_kind"] == "multiple_people"
-                       else ("no people, scenery only" if bk["scene_kind"] == "no_person" else bk["hi"][:50])))
+                       else ("no people, scenery only" if bk["scene_kind"] == "no_person" else bk["dir"][:50])))
             prev_recap = (f"{_whotxt} at {bk['env']}")[:200]
 
     # ---------- cutaway images ----------
@@ -414,15 +924,22 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
         return im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
     CUT = {i: fit(os.path.join(ND, f"b{i}.jpg")) for i in cut_idx if have(i)}
     CAMS = ["push_in", "pull_out", "pan_left", "pan_right", "static_drift"]
-    def cam(img, p, mode, t=0.0):
-        if mode == "push_in": z = 1.05 + 0.10 * p; ox = oy = 0.5
-        elif mode == "pull_out": z = 1.15 - 0.10 * p; ox = oy = 0.5
-        elif mode == "pan_left": z = 1.10; ox = 0.62 - 0.26 * p; oy = 0.5
-        elif mode == "pan_right": z = 1.10; ox = 0.38 + 0.26 * p; oy = 0.5
-        else: z = 1.07; ox = 0.5; oy = 0.5
-        z += 0.010 * math.sin(t * 2 * math.pi * 0.28)                              # subtle breathing -> alive feel
-        ox = min(1, max(0, ox + 0.006 * math.sin(t * 2 * math.pi * 0.19)))         # gentle sway
-        oy = min(1, max(0, oy + 0.010 * math.sin(t * 2 * math.pi * 0.22)))
+    def _ease(p):
+        p = 0.0 if p < 0 else (1.0 if p > 1 else p)
+        return p * p * (3.0 - 2.0 * p)                                             # smoothstep ease-in/out
+    def cam(img, p, mode, t=0.0, scene=0):
+        h = (EPISODE_SEED * 2654435761 + scene * 40503 + 0x9E3779B1) & 0xFFFFFFFF   # per-scene deterministic variety
+        r0 = ((h >> 8) & 0xFFFF) / 65535.0; r1 = ((h >> 16) & 0xFFFF) / 65535.0
+        amp = 0.85 + 0.45 * r0; phab = r1 * 6.28318; pe = _ease(p)
+        strong = 1.35 if r0 > 0.75 else 1.0                                        # ~25% of scenes get a bolder move
+        if   mode == "push_in":  z = 1.05 + 0.10 * amp * strong * pe; ox = oy = 0.5
+        elif mode == "pull_out": z = 1.15 - 0.10 * amp * strong * pe; ox = oy = 0.5
+        elif mode == "pan_left": z = 1.10; ox = 0.62 - 0.26 * amp * pe; oy = 0.5
+        elif mode == "pan_right":z = 1.10; ox = 0.38 + 0.26 * amp * pe; oy = 0.5
+        else:                    z = 1.07 + 0.018 * amp * pe; ox = 0.5; oy = 0.5
+        z += 0.010 * amp * math.sin(t * 2 * math.pi * 0.28 + phab)                  # subtle breathing -> alive feel
+        ox = min(1, max(0, ox + 0.006 * amp * math.sin(t * 2 * math.pi * 0.19 + phab)))  # gentle sway
+        oy = min(1, max(0, oy + 0.010 * amp * math.sin(t * 2 * math.pi * 0.22 + phab)))
         cw, ch = int(W / z), int(H / z); px = int((img.width - cw) * ox); py = int((img.height - ch) * oy)
         px = max(0, min(img.width - cw, px)); py = max(0, min(img.height - ch, py))
         return img.crop((px, py, px + cw, py + ch)).resize((W, H), Image.LANCZOS)
@@ -451,7 +968,7 @@ def render(audio_path, output_path, target_seconds=120, topic="", transcript="",
             face = Image.fromarray(cv2.cvtColor(w768, cv2.COLOR_BGR2RGB)).resize((720, 720), Image.LANCZOS)
             dy = int(round(2.2 * math.sin(tt * 2.0) + 1.0 * o_sm[f])); cv_ = STUDIO.copy(); cv_.paste(face, (XOFF, dy), MASK[hid]); fr = cv_
         else:
-            img = CUT.get(k) or (next(iter(CUT.values())) if CUT else Image.new("RGB", (W, H), (20, 20, 30))); fr = cam(img, p, CAMS[(k * 7 + 2) % 5], tt)
+            img = CUT.get(k) or (next(iter(CUT.values())) if CUT else Image.new("RGB", (W, H), (20, 20, 30))); fr = cam(img, p, CAMS[(k * 7 + 2) % 5], tt, scene=k); fr = env_motion(fr, bk.get("sfx", ""), tt, (EPISODE_SEED + k * SCENE_STEP + bk.get("salt", 0)) % 2_000_000, bk.get("emo", "neutral"), bk.get("env", ""))
         a = np.asarray(fr.convert("RGB")).astype(np.float32) * vig; fr = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8)).convert("RGBA"); brand(fr)
         lf = f - int(bk["a"] * FPS)
         if k > 0 and lf < XF and prev is not None: fr = Image.blend(prev, fr, lf / XF)

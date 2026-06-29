@@ -443,7 +443,8 @@ def create_cartoon_episode(target_seconds, topic="", transcript="", progress_cb=
     # narrators with face-warp viseme lip-sync + scene ambient sound. Generates its own art
     # (no stock photos). Requires the local cartoon dependencies (see requirements-cartoon-local.txt).
     import imageio_ffmpeg
-    import cartoon_local
+    import importlib, cartoon_local
+    cartoon_local = importlib.reload(cartoon_local)   # always pick up the latest cartoon_local.py
 
     ensure_folders()
     validate_inputs()
@@ -743,9 +744,12 @@ def render_app():
                 "Pehli baar whisper model download hoga."
             )
         transcript_text = st.text_area(
-            "Hindi Transcript / Subtitles (optional)",
+            "Story Script / Hindi Text (optional — drives the visuals)",
             height=180,
-            placeholder="Yahan Hindi transcript paste karo.",
+            placeholder=("Yahan apni poori kahani ka TEXT paste karo. Agar diya, to har scene ka "
+                         "background / character / weather / location ISI text se banega (saaf samajh — "
+                         "ASR galtiyan nahi). Audio phir bhi voice + timing + lip-sync + captions deta hai. "
+                         "Khaali chhodo to app khud audio transcribe karke samajhta hai."),
         )
 
         if creation_mode == "2D Cartoon Episode (Lip Sync)":
