@@ -28,7 +28,7 @@ def _clip_seconds(path):
 
 
 def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade=True,
-           n_particles=42, progress=None):
+           leaves=True, n_particles=42, progress=None):
     """clip -> slow to target_sec + camera + fireflies + grade + optional voice -> out_path (yuv420p)."""
     log = progress or (lambda x: None)
     if cv2 is None:
@@ -54,6 +54,7 @@ def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade
     bx = rng.rand(Np)*W; by = rng.rand(Np)*H
     vx = (rng.rand(Np)-0.5)*6; vy = -(rng.rand(Np)*5+1.5)
     ph = rng.rand(Np)*6.28; tw = rng.rand(Np)*1.8+1.2; amp = rng.rand(Np)*9+4
+    mgx, mgy = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))   # for leaves sway
 
     cmd = [FF, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-"]
     if voice:
@@ -78,6 +79,10 @@ def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade
             vw, vh = W/z, H/z
             l = min(max(cx-vw/2, 0), W-vw); tp = min(max(cy-vh/2, 0), H-vh)
             frame = cv2.resize(frame[int(tp):int(tp+vh), int(l):int(l+vw)], (W, H), interpolation=cv2.INTER_LINEAR)
+        if leaves:
+            # gentle canopy/leaves sway — horizontal ripple, strongest at top, minimal on lower (character) area
+            disp = (2.4 * np.sin(mgy/26.0 + tt*1.7) * (1.0 - mgy/H*0.65)).astype(np.float32)
+            frame = cv2.remap(frame, mgx + disp, mgy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
         if grade:
             frame[:, :, 0] *= 1.04; frame[:, :, 2] *= 0.97
         if fireflies:
@@ -117,10 +122,11 @@ def render_mode():
         target_min = st.slider("Target length (minutes)", 0.5, 5.0, 3.0, 0.5, key="cine_len")
     with c2:
         n_part = st.slider("Fireflies / particles", 0, 90, 42, key="cine_part")
-    o1, o2, o3 = st.columns(3)
+    o1, o2, o3, o4 = st.columns(4)
     with o1: cam = st.checkbox("Moving camera", True, key="cine_cam")
     with o2: ff = st.checkbox("Fireflies", True, key="cine_ff")
-    with o3: gr = st.checkbox("Warm grade", True, key="cine_gr")
+    with o3: lv = st.checkbox("Leaves sway", True, key="cine_lv")
+    with o4: gr = st.checkbox("Warm grade", True, key="cine_gr")
 
     if clip:
         cp = os.path.join(D, "in_clip.mp4")
@@ -143,7 +149,7 @@ def render_mode():
         def prog(m): logs.append(str(m)); box.code("\n".join(logs[-14:]))
         try:
             with st.spinner("Slow-mo + camera + fireflies + grade… (thodी der)"):
-                render(cp, vp, target_min*60, out, fireflies=ff, camera=cam, grade=gr, n_particles=n_part, progress=prog)
+                render(cp, vp, target_min*60, out, fireflies=ff, camera=cam, grade=gr, leaves=lv, n_particles=n_part, progress=prog)
             st.success("✅ Cinematic video ready!")
             st.video(out)
             with open(out, "rb") as vf:
