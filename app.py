@@ -41,6 +41,8 @@ CREATION_MODES = [
     "Stock Video Documentary",
     "Cinematic Image Story",
     "2D Cartoon Episode (Lip Sync)",
+    "Storyboard Grid → Video",
+    "Cinematic Slow-Mo (clip → long)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -514,25 +516,65 @@ def extract_youtube_shorts():
     )
 
 
+def robust_unlink(path, retries=6, delay=0.4):
+    """Delete a file even if Windows has it transiently locked.
+
+    Retries a few times (handles antivirus scans / a subprocess handle that is
+    about to close), then as a last resort renames the file out of the way so a
+    fresh file can be written to the original name. Raises only if even the
+    rename fails (file is held with an exclusive, non-shareable lock).
+    """
+    import os
+    import time
+    import uuid
+
+    for attempt in range(retries):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            # Last resort: move it aside so the name is free for the new file.
+            stale = path.with_name(f"_stale_{uuid.uuid4().hex[:8]}_{path.name}")
+            try:
+                os.replace(path, stale)
+                return
+            except OSError:
+                raise PermissionError(
+                    f"'{path.name}' abhi bhi locked hai. Koi render/transcription chal "
+                    f"raha ho to use khatam hone do, ya app restart karke dobara upload karo."
+                )
+
+
 def clear_old_videos():
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     for path in VIDEO_DIR.iterdir():
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
-            path.unlink()
+            robust_unlink(path)
 
 
 def clear_old_images():
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     for path in IMAGE_DIR.iterdir():
         if path.is_file():
-            path.unlink()
+            robust_unlink(path)
 
 
 def clear_old_audio():
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Best-effort sweep of files parked aside by a previous locked delete.
+    for stale in INPUT_DIR.glob("_stale_*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass  # still locked; leave it, try again next run
     for path in INPUT_DIR.glob("audio*"):
         if path.is_file():
-            path.unlink()
+            robust_unlink(path)
 
 
 def save_and_extract_audio(uploaded_file):
@@ -660,6 +702,24 @@ def render_app():
             CREATION_MODES,
             horizontal=True,
         )
+        if creation_mode == "Storyboard Grid → Video":
+            try:
+                import importlib, storyboard_studio as _sbs
+                importlib.reload(_sbs)
+                _sbs.render_mode()
+            except Exception as _e:
+                st.error("Storyboard mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Cinematic Slow-Mo (clip → long)":
+            try:
+                import importlib, cinematic_studio as _cine
+                importlib.reload(_cine)
+                _cine.render_mode()
+            except Exception as _e:
+                st.error("Cinematic mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
         topic = st.text_area(
             "Topic",
             height=96,
