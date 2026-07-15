@@ -43,6 +43,8 @@ CREATION_MODES = [
     "2D Cartoon Episode (Lip Sync)",
     "Storyboard Grid → Video",
     "Cinematic Slow-Mo (clip → long)",
+    "Concat + Voiceover (clips + narration)",
+    "Short / Reel (30s + Subscribe CTA)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -718,6 +720,24 @@ def render_app():
                 _cine.render_mode()
             except Exception as _e:
                 st.error("Cinematic mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Concat + Voiceover (clips + narration)":
+            try:
+                import importlib, concat_studio as _cc
+                importlib.reload(_cc)
+                _cc.render_mode()
+            except Exception as _e:
+                st.error("Concat mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Short / Reel (30s + Subscribe CTA)":
+            try:
+                import importlib, shorts_studio as _sh
+                importlib.reload(_sh)
+                _sh.render_mode()
+            except Exception as _e:
+                st.error("Shorts mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
         topic = st.text_area(

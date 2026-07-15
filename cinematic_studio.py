@@ -27,44 +27,21 @@ def _clip_seconds(path):
     return (n / fps) if fps else 0.0
 
 
-def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade=True,
-           leaves=True, n_particles=42, progress=None):
-    """clip -> slow to target_sec + camera + fireflies + grade + optional voice -> out_path (yuv420p)."""
-    log = progress or (lambda x: None)
-    if cv2 is None:
-        raise RuntimeError("opencv (cv2) not installed")
-    work = tempfile.mkdtemp(prefix="cine_")
-    dur = _clip_seconds(clip) or 1.0
-    factor = max(1.0, target_sec / dur)
-    log(f"clip {dur:.1f}s → {target_sec:.0f}s  (slow {factor:.1f}x)")
-
-    # 1) smooth slow-motion via motion-interpolation
-    slow = os.path.join(work, "slow.mp4")
-    subprocess.run([FF, "-y", "-v", "error", "-i", clip, "-vf",
-                    f"setpts={factor:.4f}*PTS,minterpolate=fps={FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1",
-                    "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", slow], check=True)
-    log("slow-motion ready — adding camera + fireflies + grade…")
-
-    # 2) cinematic pass: Ken Burns + fireflies + warm grade, piped to ffmpeg (+ voice)
+def _cine_pass(slow, seg_out, seg_sec, seed, fireflies, camera, grade, leaves, n_particles, log):
+    """One slowed clip -> add Ken Burns camera + fireflies + leaves sway + warm grade -> seg_out (no audio)."""
     R = 15
     yy, xx = np.mgrid[-R:R+1, -R:R+1]
     sprite = np.exp(-(xx**2 + yy**2) / (2 * (R/2.3)**2)).astype(np.float32)
     warm = np.array([1.0, 0.9, 0.55], np.float32)
-    rng = np.random.RandomState(7); Np = int(n_particles)
+    rng = np.random.RandomState(7 + seed); Np = int(n_particles)          # per-clip firefly seed
     bx = rng.rand(Np)*W; by = rng.rand(Np)*H
     vx = (rng.rand(Np)-0.5)*6; vy = -(rng.rand(Np)*5+1.5)
     ph = rng.rand(Np)*6.28; tw = rng.rand(Np)*1.8+1.2; amp = rng.rand(Np)*9+4
     mgx, mgy = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32))   # for leaves sway
-
-    cmd = [FF, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-"]
-    if voice:
-        cmd += ["-i", voice, "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "160k", "-shortest"]
-    else:
-        cmd += ["-an"]
-    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path]
+    cmd = [FF, "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
+           "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", seg_out]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-
-    cap = cv2.VideoCapture(slow); NF = int(target_sec * FPS)
+    cap = cv2.VideoCapture(slow); NF = int(seg_sec * FPS)
     for f in range(NF):
         ok, fr = cap.read()
         if not ok:
@@ -80,7 +57,6 @@ def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade
             l = min(max(cx-vw/2, 0), W-vw); tp = min(max(cy-vh/2, 0), H-vh)
             frame = cv2.resize(frame[int(tp):int(tp+vh), int(l):int(l+vw)], (W, H), interpolation=cv2.INTER_LINEAR)
         if leaves:
-            # gentle canopy/leaves sway — horizontal ripple, strongest at top, minimal on lower (character) area
             disp = (2.4 * np.sin(mgy/26.0 + tt*1.7) * (1.0 - mgy/H*0.65)).astype(np.float32)
             frame = cv2.remap(frame, mgx + disp, mgy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
         if grade:
@@ -99,10 +75,52 @@ def render(clip, voice, target_sec, out_path, fireflies=True, camera=True, grade
         except (BrokenPipeError, OSError):
             break
         if f % (FPS*10) == 0:
-            log(f"  rendering… {f//FPS}s / {target_sec:.0f}s")
+            log(f"    …{f//FPS}s / {seg_sec:.0f}s")
     try: proc.stdin.close()
     except Exception: pass
     proc.wait(); cap.release()
+
+
+def render(clips, voice, factor, out_path, fireflies=True, camera=True, grade=True,
+           leaves=True, n_particles=42, progress=None):
+    """ONE or MANY short clips -> each GENTLY slowed by `factor` (NOT stretched to a huge target, so it
+    reads as a cinematic shot, never extreme slow-mo) + camera/fireflies/leaves/grade -> joined into one
+    story video (+ optional voice) -> out_path. Total length ≈ sum(clip_durations) × factor."""
+    log = progress or (lambda x: None)
+    if cv2 is None:
+        raise RuntimeError("opencv (cv2) not installed")
+    if isinstance(clips, str):
+        clips = [clips]
+    factor = max(1.0, min(3.0, float(factor)))          # cinematic slow, hard-capped so it never over-slows
+    work = tempfile.mkdtemp(prefix="cine_")
+    segs = []
+    for ci, clip in enumerate(clips):
+        dur = _clip_seconds(clip) or 1.0
+        seg_sec = dur * factor
+        log(f"clip {ci+1}/{len(clips)}: {dur:.1f}s → {seg_sec:.1f}s  (gentle slow {factor:.2f}x)")
+        slow = os.path.join(work, f"slow{ci}.mp4")      # 1) smooth motion-interpolated slow
+        subprocess.run([FF, "-y", "-v", "error", "-i", clip, "-vf",
+                        f"setpts={factor:.4f}*PTS,minterpolate=fps={FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1",
+                        "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", slow], check=True)
+        seg = os.path.join(work, f"seg{ci}.mp4")        # 2) cinematic pass
+        _cine_pass(slow, seg, seg_sec, ci, fireflies, camera, grade, leaves, n_particles, log)
+        segs.append(seg)
+    # 3) join the story clips
+    if len(segs) == 1:
+        joined = segs[0]
+    else:
+        log("joining clips into one story…")
+        joined = os.path.join(work, "joined.mp4")
+        lst = os.path.join(work, "list.txt")
+        open(lst, "w").write("\n".join(f"file '{s.replace(chr(92), '/')}'" for s in segs))
+        subprocess.run([FF, "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst,
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", joined], check=True)
+    # 4) optional voice-over, then finalise
+    if voice:
+        subprocess.run([FF, "-y", "-v", "error", "-i", joined, "-i", voice, "-map", "0:v", "-map", "1:a",
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", out_path], check=True)
+    else:
+        subprocess.run([FF, "-y", "-v", "error", "-i", joined, "-c", "copy", "-movflags", "+faststart", out_path], check=True)
     log(f"DONE → {out_path}")
     return out_path
 
@@ -113,13 +131,15 @@ def render_mode():
         st.session_state.cinedir = tempfile.mkdtemp(prefix="cinestudio_")
     D = st.session_state.cinedir
 
-    st.markdown("**Cinematic Slow-Mo** — ek chhoti animated clip (jaise 10s Veo/Ghibli) daalo → smoothly slow karke long banata hai + moving camera + magical fireflies + warm grade, taaki wo *slow-motion* na lage, *cinematic* lage. Voice optional.")
-    clip = st.file_uploader("Animated clip (mp4)", type=["mp4", "mov", "webm"], key="cine_clip")
+    st.markdown("**Cinematic Slow-Mo** — story ke **ek ya zyada clips** (jaise 3-4 chhoti Veo/Ghibli clips) daalo → har clip ko **halka-sa (cinematic) slow** karke, moving camera + fireflies + warm grade ke saath ek **story video** me jod deta hai. *Bahut* slow-mo nahi — bas cinematic feel. Voice optional.")
+    clips = st.file_uploader("Animated clips (mp4) — ek ya zyada, story ke order me", type=["mp4", "mov", "webm"],
+                             accept_multiple_files=True, key="cine_clips")
     voice = st.file_uploader("Voice-over (optional) — mp3/m4a/wav/mp4", type=["mp3", "m4a", "wav", "mp4"], key="cine_voice")
 
     c1, c2 = st.columns(2)
     with c1:
-        target_min = st.slider("Target length (minutes)", 0.5, 5.0, 3.0, 0.5, key="cine_len")
+        slow = st.slider("Slow-mo strength (x)", 1.0, 3.0, 1.75, 0.25, key="cine_slow",
+                         help="1x = normal · 1.75x = gentle cinematic (recommended) · 3x = max. Itna hi slow — extreme slow-mo nahi.")
     with c2:
         n_part = st.slider("Fireflies / particles", 0, 90, 42, key="cine_part")
     o1, o2, o3, o4 = st.columns(4)
@@ -128,19 +148,21 @@ def render_mode():
     with o3: lv = st.checkbox("Leaves sway", True, key="cine_lv")
     with o4: gr = st.checkbox("Warm grade", True, key="cine_gr")
 
-    if clip:
-        cp = os.path.join(D, "in_clip.mp4")
-        with open(cp, "wb") as w: w.write(clip.getbuffer())
-        st.video(cp)
-        dur = _clip_seconds(cp) if cv2 else 0
-        if dur:
-            st.caption(f"Clip = {dur:.1f}s → target {target_min:.1f} min  (slow ~{max(1, (target_min*60)/dur):.0f}x). "
-                       + ("⚠️ bahut zyada slow — motion halkी lagegi." if (target_min*60)/max(dur,0.1) > 12 else ""))
+    saved = []
+    if clips:
+        total_in = 0.0
+        for i, c in enumerate(clips):
+            cp = os.path.join(D, f"in_clip{i}.mp4")
+            with open(cp, "wb") as w: w.write(c.getbuffer())
+            saved.append(cp); total_in += (_clip_seconds(cp) if cv2 else 0)
+        st.video(saved[0])
+        if total_in:
+            st.caption(f"{len(saved)} clip(s), total {total_in:.1f}s → output ≈ **{total_in*slow:.0f}s** "
+                       f"(~{total_in*slow/60:.1f} min) at {slow:.2f}x. Gentle cinematic slow — extreme slow-mo nahi.")
 
     if st.button("Generate cinematic video", type="primary", use_container_width=True, key="cine_gen"):
-        if not clip:
-            st.error("Pehle ek animated clip daalo."); return
-        cp = os.path.join(D, "in_clip.mp4")
+        if not saved:
+            st.error("Pehle kam-se-kam ek animated clip daalo."); return
         vp = None
         if voice:
             vp = os.path.join(D, "voice" + os.path.splitext(voice.name)[1])
@@ -148,9 +170,9 @@ def render_mode():
         out = os.path.join(D, "cinematic.mp4"); box = st.empty(); logs = []
         def prog(m): logs.append(str(m)); box.code("\n".join(logs[-14:]))
         try:
-            with st.spinner("Slow-mo + camera + fireflies + grade… (thodी der)"):
-                render(cp, vp, target_min*60, out, fireflies=ff, camera=cam, grade=gr, leaves=lv, n_particles=n_part, progress=prog)
-            st.success("✅ Cinematic video ready!")
+            with st.spinner("Gentle slow + camera + fireflies + grade… (thodी der)"):
+                render(saved, vp, slow, out, fireflies=ff, camera=cam, grade=gr, leaves=lv, n_particles=n_part, progress=prog)
+            st.success("✅ Cinematic story video ready!")
             st.video(out)
             with open(out, "rb") as vf:
                 st.download_button("⬇️ Download", vf, "cinematic.mp4", "video/mp4", key="cine_dl")
