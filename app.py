@@ -45,6 +45,7 @@ CREATION_MODES = [
     "Cinematic Slow-Mo (clip → long)",
     "Concat + Voiceover (clips + narration)",
     "Short / Reel (30s + Subscribe CTA)",
+    "Faceless Video (script → narrated video)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -738,6 +739,15 @@ def render_app():
                 _sh.render_mode()
             except Exception as _e:
                 st.error("Shorts mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Faceless Video (script → narrated video)":
+            try:
+                import importlib, faceless_studio as _fl
+                importlib.reload(_fl)
+                _fl.render_mode()
+            except Exception as _e:
+                st.error("Faceless mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
         topic = st.text_area(
