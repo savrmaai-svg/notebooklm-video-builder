@@ -122,10 +122,13 @@ def assemble(clips, mp3, srt, out, W=1920, H=1080, captions=True, progress=None)
         local_srt = os.path.join(work, "subs.srt")
         with open(srt, "r", encoding="utf-8") as a, open(local_srt, "w", encoding="utf-8") as b:
             b.write(a.read())
-        fs = int(H * 0.045)
+        # libass renders SRT on a 288-tall virtual canvas then upscales to H, so the on-screen
+        # size = fs * H / 288. Compute fs from the W/H ratio to keep actual caption size (relative
+        # to width) identical in landscape & vertical. 27*W/H → ~48 for 16:9, ~15 for 9:16.
+        fs = max(12, round(27 * W / H))
         style = (f"FontName=Arial,Fontsize={fs},Bold=1,PrimaryColour=&H00FFFFFF,"
                  f"OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,"
-                 f"Alignment=2,MarginV={int(H*0.06)}")
+                 f"Alignment=2,MarginV=30")           # MarginV in 288-space ≈ 10% actual bottom
         subs = f"subtitles=subs.srt:force_style='{style}'"
 
     log(f"assembling {adur:.0f}s faceless video (loop reel to narration)…")
