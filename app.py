@@ -46,6 +46,7 @@ CREATION_MODES = [
     "Concat + Voiceover (clips + narration)",
     "Short / Reel (30s + Subscribe CTA)",
     "Faceless Video (script → narrated video)",
+    "Prompt Generator (story → AI clip prompts)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -748,6 +749,15 @@ def render_app():
                 _fl.render_mode()
             except Exception as _e:
                 st.error("Faceless mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Prompt Generator (story → AI clip prompts)":
+            try:
+                import importlib, prompt_studio as _ps
+                importlib.reload(_ps)
+                _ps.render_mode()
+            except Exception as _e:
+                st.error("Prompt mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
         topic = st.text_area(
