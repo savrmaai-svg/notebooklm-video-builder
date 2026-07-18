@@ -47,6 +47,7 @@ CREATION_MODES = [
     "Short / Reel (30s + Subscribe CTA)",
     "Faceless Video (script → narrated video)",
     "Prompt Generator (story → AI clip prompts)",
+    "Clip Importer (Downloads → ordered clips)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
@@ -758,6 +759,15 @@ def render_app():
                 _ps.render_mode()
             except Exception as _e:
                 st.error("Prompt mode error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "Clip Importer (Downloads → ordered clips)":
+            try:
+                import importlib, clip_importer as _ci
+                importlib.reload(_ci)
+                _ci.render_mode()
+            except Exception as _e:
+                st.error("Importer mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
         topic = st.text_area(
