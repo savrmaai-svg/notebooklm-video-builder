@@ -135,7 +135,5 @@ def render_mode():
             made = import_clips(keep, dest)
             st.success(f"✅ {len(made)} clips import ho gaye → `{dest}`")
             st.code("\n".join(os.path.basename(m) for m in made))
-            st.info("Ab **Concat + Voiceover** mode kholo → **\"📁 Folder se\"** chuno → yahi path daalo "
-                    "→ narration ka path daalo → poori movie ban jaayegi. **Kuch upload nahi karna.** 🎬")
         except Exception as e:
             st.error("Import error: " + str(e))

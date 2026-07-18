@@ -44,11 +44,8 @@ CREATION_MODES = [
     "2D Cartoon Episode (Lip Sync)",
     "Storyboard Grid → Video",
     "Cinematic Slow-Mo (clip → long)",
-    "Concat + Voiceover (clips + narration)",
     "Short / Reel (30s + Subscribe CTA)",
     "Faceless Video (script → narrated video)",
-    "Prompt Generator (story → AI clip prompts)",
-    "Clip Importer (Downloads → ordered clips)",
 ]
 OUTPUT_DURATION_OPTIONS = {
     "1-2 minutes demo": 120,
