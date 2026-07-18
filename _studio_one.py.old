@@ -1,0 +1,165 @@
+# 🎬 One Studio — story se poori movie tak, EK hi screen par.
+# Pehle ye kaam 4 alag modes me bata hua tha (prompts / import / concat) aur user ko idhar-udhar
+# jaana padta tha. Ye wahi cheezein ek page par, upar se neeche, ek flow me chalata hai.
+# Logic duplicate nahi hai — teeno modules ke hi functions reuse karta hai.
+import os, importlib, tempfile
+import streamlit as st
+
+import prompt_studio as PS
+import clip_importer as CI
+import concat_studio as CC
+
+CLIP_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "my_story_clips")
+
+
+def render_mode():
+    for m in (PS, CI, CC):                       # pick up edits without restarting the app
+        importlib.reload(m)
+
+    if "one_tmp" not in st.session_state:
+        st.session_state.one_tmp = tempfile.mkdtemp(prefix="onestudio_")
+    T = st.session_state.one_tmp
+
+    st.markdown("### 🎬 One Studio — kahani se poori movie, ek hi jagah")
+    st.caption("Upar se neeche chalte jao. Kahin aur jaane ki zarurat nahi.")
+
+    # ───────────────────────── STEP 1 ─────────────────────────
+    st.markdown("## 1️⃣ Kahani → prompts")
+    key = ""
+    try:
+        key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        pass
+
+    story = st.text_area("📖 Apni poori kahani yahan daalo (Hindi/English, jitni lambi ho)",
+                         height=170, key="one_story")
+    c1, c2, c3 = st.columns([1.2, 1, 1])
+    with c1:
+        style_name = st.selectbox("🎨 Style", list(PS.STYLES.keys()), key="one_style")
+    with c2:
+        seconds = st.slider("⏱️ Clip length (s)", 5, 20, 10, 1, key="one_sec")
+    with c3:
+        st.caption(f"🎬 Poori story **{PS.SHOTS_MIN}–{PS.SHOTS_MAX} clips** me, bina cut ke jude hue.")
+
+    chars = st.session_state.get("one_chars", "")
+    setg = st.session_state.get("one_setg", "")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("✨ AI se characters + scenes banwao (free)", use_container_width=True, key="one_ai"):
+            if not key:
+                st.error("`.streamlit/secrets.toml` me GEMINI_API_KEY daalo.")
+            elif not story.strip():
+                st.error("Pehle kahani daalo.")
+            else:
+                try:
+                    with st.spinner("AI kahani tod raha hai…"):
+                        ch, sg, scenes = PS.ai_breakdown(story, style_name, PS.SHOTS_MIN, key)
+                    st.session_state.one_chars = ch
+                    st.session_state.one_setg = sg
+                    st.session_state.one_scenes = scenes
+                    st.success(f"✅ {len(scenes)} scenes + characters ban gaye.")
+                except Exception as e:
+                    st.error("AI error: " + str(e)[:250])
+    with b2:
+        gen = st.button("📝 Prompts banao", type="primary", use_container_width=True, key="one_gen")
+
+    chars = st.text_area("👥 Characters (AI bhar deta hai — chaho to badlo)",
+                         value=st.session_state.get("one_chars", ""), height=110, key="one_chars_box")
+    setg = st.text_input("🌍 Setting", value=st.session_state.get("one_setg", ""), key="one_setg_box")
+
+    if gen:
+        src = "\n".join(st.session_state.get("one_scenes") or []) or story
+        if not src.strip():
+            st.error("Kahani daalo (ya pehle AI se scenes banwao).")
+        else:
+            st.session_state.one_prompts = PS.build_prompts(src, PS.STYLES[style_name],
+                                                            chars, setg, seconds)
+
+    prompts = st.session_state.get("one_prompts")
+    if prompts:
+        st.success(f"✅ {len(prompts)} prompts ready — har ek copy karke apne AI tool me paste karo.")
+        st.download_button("⬇️ Saare prompts (.txt)",
+                           ("\n\n" + ("\n\n" + "=" * 60 + "\n\n").join(f"CLIP {n}\n\n{p}" for n, p in prompts)
+                            ).encode("utf-8"), "prompts.txt", "text/plain",
+                           use_container_width=True, key="one_dl")
+        for n, p in prompts:
+            with st.expander(f"🎬 CLIP {n}", expanded=(n == 1)):
+                st.code(p, language=None)
+
+    st.divider()
+
+    # ───────────────────────── STEP 2 ─────────────────────────
+    st.markdown("## 2️⃣ Clips bana liye? → yahin le aao")
+    st.caption("Clips download karke bas neeche ka button dabao — Downloads se khud dhoondh lega, "
+               "koi upload nahi, koi path nahi.")
+    s1, s2 = st.columns(2)
+    with s1:
+        hrs = st.number_input("🕒 Pichhle kitne ghante ke clips", 1, 720, 24, 1, key="one_hrs")
+    with s2:
+        mx = st.number_input("⏱️ Max clip length (s)", 5, 600, 30, 1, key="one_mx")
+
+    if st.button("🔍 Mere clips dhoondo", use_container_width=True, key="one_scan"):
+        st.session_state.one_found = CI.scan(CI.DEFAULT_DIR, "", hrs, 0, mx)
+
+    found = st.session_state.get("one_found") or []
+    picked = []
+    if found:
+        st.success(f"✅ {len(found)} clips mile (purani → nayi, yehi story ka order hai). "
+                   "Jo nahi chahiye untick kar do:")
+        cols = st.columns(4)
+        for i, f in enumerate(found):
+            with cols[i % 4]:
+                tp = CI.thumb(f["path"], os.path.join(T, f"t{i}.jpg"))
+                if tp:
+                    st.image(tp, use_container_width=True)
+                if st.checkbox(f"**{i+1}.** {f['dur']:.0f}s", value=True, key=f"one_k{i}"):
+                    picked.append(f)
+        st.caption(f"Chune hue: **{len(picked)}** clips · {sum(p['dur'] for p in picked):.0f}s")
+
+    st.divider()
+
+    # ───────────────────────── STEP 3 ─────────────────────────
+    st.markdown("## 3️⃣ Narration + movie banao")
+    npath = st.text_input("🎙️ Narration file ka path (ya neeche upload karo)", "", key="one_npath",
+                          placeholder=r"C:\Users\Sameer\Downloads\narration.mp3")
+    nup = None
+    if not (npath and os.path.isfile(npath)):
+        nup = st.file_uploader("…ya narration upload karo", key="one_nup",
+                               type=["mp3", "m4a", "wav", "aac", "mp4", "mov", "mkv", "webm"])
+    elif npath:
+        st.success(f"✅ Narration: {os.path.basename(npath)}")
+
+    o1, o2 = st.columns(2)
+    with o1:
+        xf = st.slider("Crossfade (s)", 0.0, 1.5, 0.6, 0.1, key="one_xf")
+    with o2:
+        smooth = st.checkbox("Smooth slow-motion", True, key="one_smooth")
+
+    if st.button("🎬 POORI MOVIE BANAO", type="primary", use_container_width=True, key="one_make"):
+        if not picked:
+            st.error("Step 2 me clips dhoondo aur chuno."); return
+        nar = npath if (npath and os.path.isfile(npath)) else None
+        if not nar and nup:
+            nar = os.path.join(T, "narration" + os.path.splitext(nup.name)[1])
+            with open(nar, "wb") as w:
+                w.write(nup.getbuffer())
+        if not nar:
+            st.error("Narration daalo (path ya upload)."); return
+
+        box = st.empty(); logs = []
+        def prog(m):
+            logs.append(str(m)); box.code("\n".join(logs[-12:]))
+        try:
+            with st.spinner("Clips ja rahe hain… phir jud kar movie banegi (thodi der lagegi)"):
+                clips = CI.import_clips(picked, CLIP_DIR)      # clip01, clip02 … ordered copy
+                prog(f"{len(clips)} clips ready")
+                out = os.path.join(T, "final_movie.mp4")
+                CC.render(clips, nar, out, crossfade=xf, match=True, smooth=smooth, progress=prog)
+            st.success("🎉 Movie ready!")
+            st.video(out)
+            with open(out, "rb") as f:
+                st.download_button("⬇️ Download movie", f, "my_movie.mp4", "video/mp4",
+                                   use_container_width=True, key="one_dlm")
+        except Exception as e:
+            st.error("Movie error: " + str(e)[:400])

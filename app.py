@@ -707,17 +707,6 @@ def render_app():
         )
         if creation_mode == "🎬 One Studio (kahani → poori movie)":
             try:
-                import importlib, studio_one as _os1
-                importlib.reload(_os1)
-                _os1.render_mode()
-            except Exception as _e:
-                if type(_e).__name__ in ("RerunException", "StopException"):
-                    raise
-                st.error("One Studio error: " + repr(_e))
-                st.exception(_e)
-            st.stop()
-        if creation_mode == "🎬 One Studio (kahani → poori movie)":
-            try:
                 import importlib, story_studio as _sm
                 importlib.reload(_sm)
                 _sm.render_mode()
