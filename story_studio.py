@@ -10,6 +10,31 @@ import streamlit as st
 import prompt_studio as PS
 import clip_importer as CI
 import concat_studio as CC
+import faceless_studio as FS
+
+# edge-tts voices — Hindi first, since the stories are usually Hindi
+VOICES = {
+    "🇮🇳 Madhur — Hindi, male": "hi-IN-MadhurNeural",
+    "🇮🇳 Swara — Hindi, female": "hi-IN-SwaraNeural",
+    "🇮🇳 Prabhat — Indian English, male": "en-IN-PrabhatNeural",
+    "🇮🇳 Neerja — Indian English, female": "en-IN-NeerjaNeural",
+    "🇺🇸 Guy — US male, narrator": "en-US-GuyNeural",
+    "🇬🇧 Ryan — UK male, documentary": "en-GB-RyanNeural",
+}
+AUDIO_EXT = (".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac")
+
+
+def find_audio(folder, hours=24):
+    """Newest audio files in a folder (e.g. a narration you just downloaded)."""
+    import glob, time
+    now, out = time.time(), []
+    for p in glob.glob(os.path.join(folder, "*")):
+        if p.lower().endswith(AUDIO_EXT) and os.path.isfile(p):
+            mt = os.path.getmtime(p)
+            if not hours or (now - mt) <= hours * 3600:
+                out.append((p, mt))
+    out.sort(key=lambda x: -x[1])          # newest first
+    return [p for p, _ in out]
 
 
 def _step(n, title, done=False):
@@ -114,12 +139,54 @@ def render_mode():
         if ss.sm_imported:
             st.divider()
             _step(4, "Narration daalo aur movie banao")
-            npath = st.text_input("🎙️ Narration file ka path", "", key="sm_npath",
-                                  placeholder=r"C:\Users\Sameer\Downloads\narration.mp3")
-            nup = None
-            if not (npath and os.path.isfile(npath)):
-                nup = st.file_uploader("…ya upload karo", key="sm_nup",
-                                       type=["mp3", "m4a", "wav", "aac", "mp4", "mov", "mkv", "webm"])
+            nmode = st.radio("Narration kahan se?",
+                             ["🎙️ Kahani se khud bana do (free)",
+                              "📁 Downloads se dhoondo",
+                              "⬆️ Khud daalo"],
+                             horizontal=True, key="sm_nmode")
+            npath, nup = "", None
+
+            if nmode.startswith("🎙️"):
+                v1, v2 = st.columns(2)
+                with v1:
+                    voice = st.selectbox("Awaaz", list(VOICES.keys()), key="sm_voice")
+                with v2:
+                    rate = st.select_slider("Speed", ["-20%", "-10%", "+0%", "+10%", "+20%"], "+0%", key="sm_rate")
+                st.caption("Step 1 wali kahani se narration khud ban jaayega — kuch record/download nahi karna.")
+                if st.button("🎙️ Narration banao", use_container_width=True, key="sm_tts"):
+                    txt = (ss.get("sm_story") or "").strip()
+                    if not txt:
+                        st.error("Step 1 me kahani nahi mili.")
+                    else:
+                        try:
+                            mp3 = os.path.join(os.path.dirname(ss.sm_imported[0]), "narration.mp3")
+                            with st.spinner("Awaaz ban rahi hai…"):
+                                FS.narrate(txt, VOICES[voice], mp3, rate=rate)
+                            ss.sm_narr = mp3
+                            st.success(f"✅ Narration ready ({FS._dur(mp3):.0f}s)")
+                        except Exception as e:
+                            st.error("TTS error: " + str(e)[:200])
+                if ss.get("sm_narr") and os.path.isfile(ss.sm_narr):
+                    st.audio(ss.sm_narr)
+                    npath = ss.sm_narr
+
+            elif nmode.startswith("📁"):
+                cand = find_audio(CI.DEFAULT_DIR, 24)
+                if cand:
+                    pick = st.selectbox("Downloads me mile (naya sabse upar)", cand,
+                                        format_func=os.path.basename, key="sm_pick")
+                    if pick:
+                        st.audio(pick)
+                        npath = pick
+                else:
+                    st.warning("Pichhle 24 ghante me koi audio file nahi mili Downloads me.")
+
+            else:
+                npath = st.text_input("🎙️ Narration file ka path", "", key="sm_npath",
+                                      placeholder=r"C:\Users\Sameer\Downloads\narration.mp3")
+                if not (npath and os.path.isfile(npath)):
+                    nup = st.file_uploader("…ya upload karo", key="sm_nup",
+                                           type=["mp3", "m4a", "wav", "aac", "mp4", "mov", "mkv", "webm"])
             m1, m2 = st.columns(2)
             with m1:
                 xf = st.slider("Crossfade (s)", 0.0, 1.5, 0.6, 0.1, key="sm_xf")
