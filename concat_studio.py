@@ -2,7 +2,7 @@
 # Many story clips (in order) -> joined seamlessly (crossfades) -> smoothly slowed to MATCH the
 # NotebookLM narration length (so each scene spans its part of the story, video never races ahead of
 # the audio) -> narration laid on top as a VOICE-OVER (NO lip-sync) -> player-safe mp4.
-import os, subprocess, tempfile
+import os, glob, subprocess, tempfile
 import streamlit as st
 
 FF = r"C:\Users\Sameer\Downloads\ffmpeg-8.0.1-essentials_build\ffmpeg-8.0.1-essentials_build\bin\ffmpeg.exe"
@@ -98,10 +98,42 @@ def render_mode():
     st.markdown("**Concat + Voiceover** — story ke **clips** (order me) + **NotebookLM narration** daalo → "
                 "clips seamless jud jaate hain (crossfade), narration ki poori length tak **smoothly slow** ho ke, "
                 "narration **voice-over** (no lip-sync) ban jaata hai — har scene apni story ke part pe, video aur audio saath.")
-    clips = st.file_uploader("Story clips — order me (mp4)", type=["mp4", "mov", "webm"],
-                             accept_multiple_files=True, key="cc_clips")
-    narr = st.file_uploader("NotebookLM narration (voice) — mp4/mp3/m4a/wav", key="cc_narr",
-                            type=["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav", "aac"])
+    src_mode = st.radio("Clips kahan se lein?",
+                        ["📁 Folder se (kuch upload nahi karna)", "⬆️ Upload karke"],
+                        horizontal=True, key="cc_src",
+                        help="Clip Importer se jo folder bana hai uska path daal do — app seedha wahin se "
+                             "utha lega, upload ki zarurat nahi.")
+    use_folder = src_mode.startswith("📁")
+
+    clips, folder_clips = None, None
+    if use_folder:
+        clip_dir = st.text_input("📁 Clips folder",
+                                 os.path.join(os.path.expanduser("~"), "Desktop", "my_story_clips"),
+                                 key="cc_dir")
+        if clip_dir and os.path.isdir(clip_dir):
+            folder_clips = sorted(p for p in glob.glob(os.path.join(clip_dir, "*"))
+                                  if p.lower().endswith((".mp4", ".mov", ".webm", ".mkv")))
+            if folder_clips:
+                st.success(f"✅ {len(folder_clips)} clips mile — order: "
+                           f"{os.path.basename(folder_clips[0])} → {os.path.basename(folder_clips[-1])}")
+            else:
+                st.warning("Is folder me koi video nahi mili.")
+        elif clip_dir:
+            st.warning("Folder nahi mila — path check karo.")
+    else:
+        clips = st.file_uploader("Story clips — order me (mp4)", type=["mp4", "mov", "webm"],
+                                 accept_multiple_files=True, key="cc_clips")
+
+    npath_in = st.text_input("🎙️ Narration ka path (upload nahi karna)", "", key="cc_npath",
+                             placeholder=r"C:\Users\Sameer\Downloads\narration.mp3")
+    narr = None
+    if npath_in and os.path.isfile(npath_in):
+        st.success(f"✅ Narration: {os.path.basename(npath_in)}")
+    else:
+        if npath_in:
+            st.warning("File nahi mili — path check karo, ya neeche se upload karo.")
+        narr = st.file_uploader("…ya narration upload karo — mp4/mp3/m4a/wav", key="cc_narr",
+                                type=["mp4", "mov", "mkv", "webm", "mp3", "m4a", "wav", "aac"])
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -114,13 +146,18 @@ def render_mode():
     smooth = st.checkbox("Smooth slow-motion (best, thoda slow render)", True, key="cc_smooth")
 
     saved = []
-    if clips:
+    if folder_clips:                                  # folder mode — files already on disk, use as-is
+        saved = list(folder_clips)
+    elif clips:
         for i, c in enumerate(clips):
             p = os.path.join(D, f"clip{i}.mp4")
             with open(p, "wb") as w: w.write(c.getbuffer())
             saved.append(p)
+
     npath = None
-    if narr:
+    if npath_in and os.path.isfile(npath_in):         # narration straight off disk
+        npath = npath_in
+    elif narr:
         npath = os.path.join(D, "narration" + os.path.splitext(narr.name)[1])
         with open(npath, "wb") as w: w.write(narr.getbuffer())
 
