@@ -713,6 +713,8 @@ def render_app():
                 importlib.reload(_sbs)
                 _sbs.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Storyboard mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -722,6 +724,8 @@ def render_app():
                 importlib.reload(_cine)
                 _cine.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Cinematic mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -731,6 +735,8 @@ def render_app():
                 importlib.reload(_cc)
                 _cc.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Concat mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -740,6 +746,8 @@ def render_app():
                 importlib.reload(_sh)
                 _sh.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Shorts mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -749,6 +757,8 @@ def render_app():
                 importlib.reload(_fl)
                 _fl.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Faceless mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -758,6 +768,8 @@ def render_app():
                 importlib.reload(_ps)
                 _ps.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Prompt mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
@@ -767,6 +779,8 @@ def render_app():
                 importlib.reload(_ci)
                 _ci.render_mode()
             except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise                      # Streamlit control flow, not an error
                 st.error("Importer mode error: " + repr(_e))
                 st.exception(_e)
             st.stop()
