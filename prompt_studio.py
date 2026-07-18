@@ -83,9 +83,13 @@ def ai_breakdown(idea, style_name, n_scenes, key):
         'cream kurta — describe age, build, hair, exact clothing and colours"}],'
         '"setting":"one line describing the location and lighting, same for every shot",'
         '"scenes":["shot 1 action in one vivid sentence","shot 2 action", "..."]}\n\n'
-        "Rules: character descriptions must be concrete and visual (age, clothing, colours) so an image "
-        "model draws them identically every time. Scenes must be visual actions, not dialogue or narration. "
-        f"Exactly {n_scenes} scenes."
+        "Rules:\n"
+        "- List ONLY characters that actually appear in THIS story idea. Do not invent or carry over others.\n"
+        "- Character descriptions must be concrete and visual (age, build, hair, exact clothing and colours) "
+        "so an image model draws them identically every time.\n"
+        "- Scenes must be visual actions, not dialogue or narration.\n"
+        "- Refer to characters by their tag so they stay consistent.\n"
+        f"- Exactly {n_scenes} scenes, in story order."
     )
     raw = _gemini(ask, key).strip()
     raw = _re.sub(r"^```(?:json)?|```$", "", raw, flags=_re.M).strip()
