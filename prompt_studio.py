@@ -26,24 +26,33 @@ CAMERAS = ["slow push in", "slow pull back", "static wide shot", "medium close-u
            "low angle hero shot", "tracking shot following the character", "slow pan across the scene"]
 
 
-def split_scenes(story, max_scenes=30):
-    """Split a story into scene-sized beats (one prompt each)."""
+def split_scenes(story, n_shots=12):
+    """Turn a story of ANY length into EXACTLY n_shots beats covering the whole thing.
+    A long story is merged into n balanced chunks (never truncated), a short one is used as-is."""
     story = (story or "").strip()
     if not story:
         return []
-    # explicit line breaks win; otherwise split on sentences
     lines = [l.strip(" -•\t") for l in story.split("\n") if l.strip(" -•\t")]
     if len(lines) > 1:
-        beats = lines
+        parts = lines
     else:
-        beats = [s.strip() for s in re.split(r"(?<=[.!?।])\s+", story) if s.strip()]
-    return beats[:max_scenes]
+        parts = [s.strip() for s in re.split(r"(?<=[.!?।])\s+", story) if s.strip()]
+    if not parts:
+        return []
+    if len(parts) <= n_shots:
+        return parts
+    # more material than shots -> merge into n balanced chunks so the WHOLE story is covered
+    beats, per = [], len(parts) / float(n_shots)
+    for i in range(n_shots):
+        chunk = parts[int(round(i * per)):int(round((i + 1) * per))] or [parts[min(i, len(parts) - 1)]]
+        beats.append(" ".join(chunk))
+    return beats
 
 
-def build_prompts(story, style_text, characters, setting, seconds=10, max_scenes=30):
+def build_prompts(story, style_text, characters, setting, seconds=10, n_shots=12):
     """-> list of (n, prompt_text). Every prompt repeats the same style + character block verbatim,
     which is what actually keeps characters looking the same from clip to clip."""
-    beats = split_scenes(story, max_scenes)
+    beats = split_scenes(story, n_shots)
     char_block = ""
     if characters.strip():
         char_block = "CHARACTERS (keep these EXACTLY identical in every shot):\n" + characters.strip() + "\n\n"
@@ -77,8 +86,13 @@ def ai_breakdown(idea, style_name, n_scenes, key):
     import json, re as _re
     ask = (
         f"You are a film director planning an AI-generated {style_name} short film.\n"
-        f"STORY IDEA:\n{idea}\n\n"
-        f"Break this into EXACTLY {n_scenes} shots. Reply with ONLY valid JSON, no markdown fences:\n"
+        f"STORY (may be a short idea OR a long full story, in any language):\n{idea}\n\n"
+        f"Turn it into EXACTLY {n_scenes} shots that cover the ENTIRE story — beginning, middle AND ending.\n"
+        f"If the story is long, CONDENSE it: pick the {n_scenes} most important visual moments and merge the "
+        f"rest into them. Never stop partway through the story. If it is short, expand it naturally.\n"
+        f"Write the scene descriptions in ENGLISH (image models understand it best), even if the story is "
+        f"in Hindi or another language.\n\n"
+        f"Reply with ONLY valid JSON, no markdown fences:\n"
         '{"characters":[{"tag":"ELDER","desc":"70-year-old man, white beard, white knitted cap, '
         'cream kurta — describe age, build, hair, exact clothing and colours"}],'
         '"setting":"one line describing the location and lighting, same for every shot",'
@@ -150,18 +164,22 @@ def render_mode():
                                      "PIRATE: muscular man, black headband, dark sleeveless vest, scar on cheek",
                          help="Jitna detail (umar, kapde, rang, chehra) utni acchi consistency.")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         style_name = st.selectbox("🎨 Style", list(STYLES.keys()), key="ps_style")
     with c2:
         seconds = st.slider("⏱️ Har clip kitne second", 5, 20, 10, 1, key="ps_sec")
+    with c3:
+        n_shots = st.slider("🎬 Kitne clips chahiye", 4, 40, 12, 1, key="ps_shots",
+                            help="Kitni bhi lambi kahani ho, POORI story itne hi clips me aa jaayegi "
+                                 "(zaroorat pade to scenes merge kar deta hai).")
     setting = st.text_input("🌍 Setting (har shot me same)", key="ps_set",
                             placeholder="rusty cargo ship deck, open sea, overcast evening light")
 
     if st.button("✨ Generate all prompts", type="primary", use_container_width=True, key="ps_go"):
         if not story.strip():
             st.error("Pehle kahani daalo."); return
-        prompts = build_prompts(story, STYLES[style_name], chars, setting, seconds)
+        prompts = build_prompts(story, STYLES[style_name], chars, setting, seconds, n_shots)
         if not prompts:
             st.error("Koi scene nahi mila — kahani thodi lambi likho."); return
 
