@@ -83,14 +83,17 @@ def render_mode():
     folder = st.text_input("📁 Folder", DEFAULT_DIR, key="ci_dir")
     c1, c2, c3 = st.columns(3)
     with c1:
-        nf = st.text_input("🔎 Naam me ye ho", "Create_the_EXACT", key="ci_nf",
-                           help="Gemini clips ka common naam. Khaali chhodo to sab dikhenge.")
+        hrs = st.number_input("🕒 Pichhle kitne ghante", 0, 720, 24, 1, key="ci_hrs",
+                              help="Aaj ke banaye clips chahiye → 24 rakho. 0 = time ki koi limit nahi.")
     with c2:
-        hrs = st.number_input("🕒 Pichhle kitne ghante", 0, 720, 0, 1, key="ci_hrs",
-                              help="0 = time ki koi limit nahi")
-    with c3:
         mx = st.number_input("⏱️ Max length (sec)", 0, 600, 30, 1, key="ci_mx",
-                             help="AI clips chhote hote hain (~10s). Isse lambi files chhod deta hai. 0 = sab")
+                             help="AI clips chhote hote hain (~10s). Isse lambi files (poori movies) chhod deta hai.")
+    with c3:
+        nf = st.text_input("🔎 Naam me ye ho (optional)", "", key="ci_nf",
+                           help="Khaali hi rehne do — file ka naam har baar badal jaata hai "
+                                "(Create_the_EXACT…, STYLE_Pixar…, Shot_03…).")
+    st.caption("💡 Naam se filter mat karo — wo har baar badalta hai. **Recent + chhoti (~10s)** files hi "
+               "tere AI clips hain, wahi kaafi hai.")
 
     if st.button("🔍 Scan folder", use_container_width=True, key="ci_scan"):
         if not os.path.isdir(folder):

@@ -84,7 +84,10 @@ def build_prompts(story, style_text, characters, setting, seconds=10, n_shots=No
                     f"previous shot — the viewer should feel no jump, no scene reset, no time skip.")
             if i < total:
                 cont += f" It then leads into: \"{beats[i]}\""
-        p = (f"STYLE: {style_text}\n\n"
+        # shot number FIRST: AI tools name the downloaded file after the start of the prompt,
+        # so the file lands as "Shot_03_of_12...mp4" — already numbered and sortable.
+        p = (f"Shot {i:02d} of {total:02d}\n\n"
+             f"STYLE: {style_text}\n\n"
              f"{char_block}{set_block}"
              f"{cont}\n\n"
              f"SHOT {i} of {total} — ACTION: {beat}\n\n"
