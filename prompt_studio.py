@@ -60,11 +60,79 @@ def build_prompts(story, style_text, characters, setting, seconds=10, max_scenes
     return out
 
 
+def _gemini(prompt, key, model="gemini-2.5-flash", timeout=90):
+    """Plain text call to the Gemini API (FREE tier is enough — only video/Veo is blocked)."""
+    import json, urllib.request
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                                 method="POST")
+    d = json.load(urllib.request.urlopen(req, timeout=timeout))
+    return d["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def ai_breakdown(idea, style_name, n_scenes, key):
+    """Rough idea -> (character_bible, setting, scene_list). This is the thinking work, done for you."""
+    import json, re as _re
+    ask = (
+        f"You are a film director planning an AI-generated {style_name} short film.\n"
+        f"STORY IDEA:\n{idea}\n\n"
+        f"Break this into EXACTLY {n_scenes} shots. Reply with ONLY valid JSON, no markdown fences:\n"
+        '{"characters":[{"tag":"ELDER","desc":"70-year-old man, white beard, white knitted cap, '
+        'cream kurta — describe age, build, hair, exact clothing and colours"}],'
+        '"setting":"one line describing the location and lighting, same for every shot",'
+        '"scenes":["shot 1 action in one vivid sentence","shot 2 action", "..."]}\n\n'
+        "Rules: character descriptions must be concrete and visual (age, clothing, colours) so an image "
+        "model draws them identically every time. Scenes must be visual actions, not dialogue or narration. "
+        f"Exactly {n_scenes} scenes."
+    )
+    raw = _gemini(ask, key).strip()
+    raw = _re.sub(r"^```(?:json)?|```$", "", raw, flags=_re.M).strip()
+    data = json.loads(raw)
+    chars = "\n".join(f"{c.get('tag','CHAR')}: {c.get('desc','')}" for c in data.get("characters", []))
+    return chars, data.get("setting", ""), data.get("scenes", [])
+
+
 # ---------------- UI (called by app.py as a mode; NOT auto-run) ----------------
 def render_mode():
     st.markdown("**Prompt Generator** — apni kahani ek baar daalo → **har clip ka prompt** ban jaayega, "
                 "characters **locked** (har prompt me same description), taaki AI har shot me **same character** "
                 "banaye. Phir bas copy-paste karte jao. Baar-baar prompt likhne ka kaam khatam. ✍️")
+
+    # ---- AI assist: rough idea -> characters + setting + scenes (FREE text API) ----
+    _key = ""
+    try:
+        _key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
+    except Exception:
+        pass
+    with st.expander("✨ Sochne ka kaam AI se karwao (FREE) — idea daalo, scenes + characters khud ban jaayenge",
+                     expanded=False):
+        if not _key:
+            st.info("Ye chalane ke liye `.streamlit/secrets.toml` me daalo:\n\n"
+                    '`GEMINI_API_KEY = "your-key-here"`\n\n'
+                    "Free tier kaafi hai — text ke liye paisa nahi lagta (sirf video/Veo blocked hai).")
+        idea = st.text_area("💡 Bas idea likho (2-3 line)", height=90, key="ps_idea",
+                            placeholder="Somali pirates ek cargo ship hijack karte hain. Ek buzurg captain "
+                                        "shanti se unka saamna karta hai aur crew ko bachata hai.")
+        n_sc = st.slider("Kitne shots chahiye", 4, 30, 12, 1, key="ps_n")
+        if st.button("✨ AI se scenes + characters banwao", use_container_width=True, key="ps_ai"):
+            if not _key:
+                st.error("Pehle GEMINI_API_KEY secrets.toml me daalo.")
+            elif not idea.strip():
+                st.error("Idea to likho.")
+            else:
+                try:
+                    with st.spinner("AI kahani tod raha hai…"):
+                        ch, setg, scenes = ai_breakdown(idea, st.session_state.get("ps_style",
+                                                        "Pixar-style 3D cartoon"), n_sc, _key)
+                    st.session_state.ps_story = "\n".join(scenes)
+                    st.session_state.ps_chars = ch
+                    st.session_state.ps_set = setg
+                    st.success(f"✅ {len(scenes)} scenes + characters ban gaye — neeche bhar diye. Ab Generate dabao.")
+                    st.rerun()
+                except Exception as e:
+                    st.error("AI error: " + str(e)[:300])
 
     story = st.text_area("📖 Kahani / scene list", height=200, key="ps_story",
                          placeholder="Poori kahani daalo — ya har line me ek scene likho:\n"
