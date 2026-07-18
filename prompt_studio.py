@@ -26,9 +26,19 @@ CAMERAS = ["slow push in", "slow pull back", "static wide shot", "medium close-u
            "low angle hero shot", "tracking shot following the character", "slow pan across the scene"]
 
 
-def split_scenes(story, n_shots=12):
-    """Turn a story of ANY length into EXACTLY n_shots beats covering the whole thing.
-    A long story is merged into n balanced chunks (never truncated), a short one is used as-is."""
+SHOTS_MIN, SHOTS_MAX = 12, 15      # every story lands here, however long it is
+
+
+def shot_count(n_parts):
+    """Fixed 12–15 shots: 12 for a normal story, up to 15 only if there's a lot of material."""
+    if n_parts <= 24:
+        return SHOTS_MIN
+    return min(SHOTS_MAX, SHOTS_MIN + (n_parts - 24) // 12)
+
+
+def split_scenes(story, n_shots=None):
+    """Turn a story of ANY length into 12–15 beats covering the whole thing, ending included.
+    Long stories get merged into balanced chunks; nothing is ever truncated."""
     story = (story or "").strip()
     if not story:
         return []
@@ -39,20 +49,22 @@ def split_scenes(story, n_shots=12):
         parts = [s.strip() for s in re.split(r"(?<=[.!?।])\s+", story) if s.strip()]
     if not parts:
         return []
-    if len(parts) <= n_shots:
+    n = n_shots or shot_count(len(parts))
+    if len(parts) <= n:
         return parts
-    # more material than shots -> merge into n balanced chunks so the WHOLE story is covered
-    beats, per = [], len(parts) / float(n_shots)
-    for i in range(n_shots):
+    beats, per = [], len(parts) / float(n)
+    for i in range(n):
         chunk = parts[int(round(i * per)):int(round((i + 1) * per))] or [parts[min(i, len(parts) - 1)]]
         beats.append(" ".join(chunk))
     return beats
 
 
-def build_prompts(story, style_text, characters, setting, seconds=10, n_shots=12):
-    """-> list of (n, prompt_text). Every prompt repeats the same style + character block verbatim,
-    which is what actually keeps characters looking the same from clip to clip."""
+def build_prompts(story, style_text, characters, setting, seconds=10, n_shots=None):
+    """-> list of (n, prompt_text). Every prompt repeats the same style + character block verbatim
+    (that's what keeps characters identical), and carries the previous/next beat so the clips join
+    into one continuous film instead of looking like separate disconnected shots."""
     beats = split_scenes(story, n_shots)
+    total = len(beats)
     char_block = ""
     if characters.strip():
         char_block = "CHARACTERS (keep these EXACTLY identical in every shot):\n" + characters.strip() + "\n\n"
@@ -60,11 +72,26 @@ def build_prompts(story, style_text, characters, setting, seconds=10, n_shots=12
     out = []
     for i, beat in enumerate(beats, 1):
         cam = CAMERAS[(i - 1) % len(CAMERAS)]
+        # continuity: tell the model where we just came from and where we're going
+        if i == 1:
+            cont = (f"CONTINUITY: This is shot 1 of {total} — the opening of one continuous film. "
+                    f"Establish the scene. It must flow directly into: \"{beats[1]}\"" if total > 1 else
+                    f"CONTINUITY: Single continuous shot.")
+        else:
+            cont = (f"CONTINUITY: This is shot {i} of {total} of ONE continuous film. "
+                    f"It picks up EXACTLY where the previous moment left off: \"{beats[i-2]}\". "
+                    f"Same location continuity, same time of day, same lighting and colour grade as the "
+                    f"previous shot — the viewer should feel no jump, no scene reset, no time skip.")
+            if i < total:
+                cont += f" It then leads into: \"{beats[i]}\""
         p = (f"STYLE: {style_text}\n\n"
              f"{char_block}{set_block}"
-             f"SHOT {i} — ACTION: {beat}\n\n"
+             f"{cont}\n\n"
+             f"SHOT {i} of {total} — ACTION: {beat}\n\n"
              f"CAMERA: {cam}. DURATION: about {seconds} seconds. "
-             f"Continuous single shot, no cuts, no on-screen text, no subtitles, no watermark.")
+             f"ONE continuous unbroken take — no cuts, no jump cuts, no montage, no fade in or out, "
+             f"no on-screen text, no subtitles, no titles, no watermark. "
+             f"Start and end on a steady frame so it joins smoothly with the neighbouring shots.")
         out.append((i, p))
     return out
 
@@ -93,15 +120,20 @@ def ai_breakdown(idea, style_name, n_scenes, key):
         f"Write the scene descriptions in ENGLISH (image models understand it best), even if the story is "
         f"in Hindi or another language.\n\n"
         f"Reply with ONLY valid JSON, no markdown fences:\n"
-        '{"characters":[{"tag":"ELDER","desc":"70-year-old man, white beard, white knitted cap, '
-        'cream kurta — describe age, build, hair, exact clothing and colours"}],'
-        '"setting":"one line describing the location and lighting, same for every shot",'
-        '"scenes":["shot 1 action in one vivid sentence","shot 2 action", "..."]}\n\n'
+        '{"characters":[{"tag":"<NAME_IN_CAPS>","desc":"<age, build, hair, exact clothing and colours>"}],'
+        '"setting":"<one line: location and lighting, same for every shot>",'
+        '"scenes":["<shot 1 action in one vivid sentence>","<shot 2 action>","..."]}\n\n'
         "Rules:\n"
-        "- List ONLY characters that actually appear in THIS story idea. Do not invent or carry over others.\n"
+        "- The angle-bracket text above is a PLACEHOLDER showing the shape only. Never copy it. Every "
+        "character, name and detail must come from THIS story — if the story is about a truck driver, "
+        "the character is that truck driver, not anyone from an example.\n"
+        "- List ONLY characters that actually appear in THIS story. Do not invent or carry over others.\n"
         "- Character descriptions must be concrete and visual (age, build, hair, exact clothing and colours) "
         "so an image model draws them identically every time.\n"
         "- Scenes must be visual actions, not dialogue or narration.\n"
+        "- The shots form ONE continuous film: each shot must pick up exactly where the previous one "
+        "ended, in the same location continuity, same time of day and same lighting. No time jumps, "
+        "no scene resets, no cuts away and back.\n"
         "- Refer to characters by their tag so they stay consistent.\n"
         f"- Exactly {n_scenes} scenes, in story order."
     )
@@ -133,7 +165,6 @@ def render_mode():
         idea = st.text_area("💡 Bas idea likho (2-3 line)", height=90, key="ps_idea",
                             placeholder="Somali pirates ek cargo ship hijack karte hain. Ek buzurg captain "
                                         "shanti se unka saamna karta hai aur crew ko bachata hai.")
-        n_sc = st.slider("Kitne shots chahiye", 4, 30, 12, 1, key="ps_n")
         if st.button("✨ AI se scenes + characters banwao", use_container_width=True, key="ps_ai"):
             if not _key:
                 st.error("Pehle GEMINI_API_KEY secrets.toml me daalo.")
@@ -143,7 +174,7 @@ def render_mode():
                 try:
                     with st.spinner("AI kahani tod raha hai…"):
                         ch, setg, scenes = ai_breakdown(idea, st.session_state.get("ps_style",
-                                                        "Pixar-style 3D cartoon"), n_sc, _key)
+                                                        "Pixar-style 3D cartoon"), SHOTS_MIN, _key)
                     st.session_state.ps_story = "\n".join(scenes)
                     st.session_state.ps_chars = ch
                     st.session_state.ps_set = setg
@@ -164,22 +195,20 @@ def render_mode():
                                      "PIRATE: muscular man, black headband, dark sleeveless vest, scar on cheek",
                          help="Jitna detail (umar, kapde, rang, chehra) utni acchi consistency.")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         style_name = st.selectbox("🎨 Style", list(STYLES.keys()), key="ps_style")
     with c2:
         seconds = st.slider("⏱️ Har clip kitne second", 5, 20, 10, 1, key="ps_sec")
-    with c3:
-        n_shots = st.slider("🎬 Kitne clips chahiye", 4, 40, 12, 1, key="ps_shots",
-                            help="Kitni bhi lambi kahani ho, POORI story itne hi clips me aa jaayegi "
-                                 "(zaroorat pade to scenes merge kar deta hai).")
+    st.caption(f"🎬 Kitni bhi lambi kahani ho — **poori story {SHOTS_MIN}–{SHOTS_MAX} clips** me aa jaayegi, "
+               "aur clips **bina cut ke** ek doosre se jude rahenge.")
     setting = st.text_input("🌍 Setting (har shot me same)", key="ps_set",
                             placeholder="rusty cargo ship deck, open sea, overcast evening light")
 
     if st.button("✨ Generate all prompts", type="primary", use_container_width=True, key="ps_go"):
         if not story.strip():
             st.error("Pehle kahani daalo."); return
-        prompts = build_prompts(story, STYLES[style_name], chars, setting, seconds, n_shots)
+        prompts = build_prompts(story, STYLES[style_name], chars, setting, seconds)
         if not prompts:
             st.error("Koi scene nahi mila — kahani thodi lambi likho."); return
 
