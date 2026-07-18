@@ -38,6 +38,7 @@ MAX_ADAPTIVE_CUT_SECONDS = 16
 MAX_IMAGE_SCENE_SECONDS = 12
 IMAGE_SCENE_SECONDS = 7
 CREATION_MODES = [
+    "🎬 One Studio (kahani → poori movie)",
     "Stock Video Documentary",
     "Cinematic Image Story",
     "2D Cartoon Episode (Lip Sync)",
@@ -707,6 +708,28 @@ def render_app():
             CREATION_MODES,
             horizontal=True,
         )
+        if creation_mode == "🎬 One Studio (kahani → poori movie)":
+            try:
+                import importlib, studio_one as _os1
+                importlib.reload(_os1)
+                _os1.render_mode()
+            except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise
+                st.error("One Studio error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
+        if creation_mode == "🎬 One Studio (kahani → poori movie)":
+            try:
+                import importlib, story_studio as _sm
+                importlib.reload(_sm)
+                _sm.render_mode()
+            except Exception as _e:
+                if type(_e).__name__ in ("RerunException", "StopException"):
+                    raise
+                st.error("One Studio error: " + repr(_e))
+                st.exception(_e)
+            st.stop()
         if creation_mode == "Storyboard Grid → Video":
             try:
                 import importlib, storyboard_studio as _sbs
